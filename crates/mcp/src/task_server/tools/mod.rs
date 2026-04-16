@@ -385,9 +385,13 @@ impl McpServer {
 
 #[cfg(test)]
 mod tests {
-    use std::{collections::BTreeSet, sync::Once};
+    use std::{
+        collections::BTreeSet,
+        sync::{Arc, Once},
+    };
 
     use rmcp::handler::server::tool::ToolRouter;
+    use tokio::sync::RwLock;
     use uuid::Uuid;
 
     use super::McpServer;
@@ -459,6 +463,7 @@ mod tests {
                 }],
             }),
             mode: McpMode::Global,
+            relationship_cache: Arc::new(RwLock::new(Default::default())),
         };
 
         assert_eq!(server.orchestrator_session_id(), Some(session_id));
@@ -474,6 +479,7 @@ mod tests {
             tool_router: ToolRouter::default(),
             context: None,
             mode: McpMode::Orchestrator,
+            relationship_cache: Arc::new(RwLock::new(Default::default())),
         };
 
         assert_eq!(server.orchestrator_session_id(), None);

@@ -1,10 +1,13 @@
-use std::collections::HashMap;
+use std::{
+    collections::HashMap,
+    time::{Duration, Instant},
+};
 
 use api_types::{
-    CreateIssueRequest, Issue, IssuePriority, IssueRelationshipType, IssueSortField,
-    ListIssueRelationshipsResponse, ListIssueTagsResponse, ListIssuesResponse,
-    ListPullRequestsResponse, ListTagsResponse, MutationResponse, PullRequestStatus,
-    SearchIssuesRequest, SortDirection, UpdateIssueRequest,
+    CreateIssueRequest, Issue, IssuePriority, IssueRelationship, IssueRelationshipType,
+    IssueSortField, ListIssueTagsResponse, ListIssuesResponse, ListPullRequestsResponse,
+    ListTagsResponse, MutationResponse, PullRequestStatus, SearchIssuesRequest, SortDirection,
+    UpdateIssueRequest,
 };
 use rmcp::{
     ErrorData, handler::server::wrapper::Parameters, model::CallToolResult, schemars, tool,
@@ -14,6 +17,10 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use super::{McpServer, ToolError};
+use crate::task_server::ProjectRelationshipSnapshot;
+
+const PROJECT_RELATIONSHIP_CACHE_TTL: Duration = Duration::from_secs(60 * 10);
+const PROJECT_RELATIONSHIP_FETCH_CONCURRENCY: usize = 16;
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 struct McpCreateIssueRequest {
@@ -134,7 +141,7 @@ struct McpRelationshipSummary {
     related_issue_id: String,
     #[schemars(description = "The related issue's simple ID (e.g. 'PROJ-42')")]
     related_simple_id: String,
-    #[schemars(description = "Relationship type: blocking, related, or has_duplicate")]
+    #[schemars(description = "Relationship type: blocking, blocked_by, related, or has_duplicate")]
     relationship_type: String,
 }
 
@@ -341,6 +348,17 @@ impl McpServer {
             Ok(id) => id,
             Err(e) => return Ok(McpServer::tool_error(e)),
         };
+
+        let status = Self::normalize_optional_filter_string(status);
+        let priority = Self::normalize_optional_filter_string(priority);
+        let search = Self::normalize_optional_filter_string(search);
+        let simple_id = Self::normalize_optional_filter_string(simple_id);
+        let tag_name = Self::normalize_optional_filter_string(tag_name);
+        let sort_field = Self::normalize_optional_filter_string(sort_field);
+        let sort_direction = Self::normalize_optional_filter_string(sort_direction);
+        let parent_issue_id = Self::normalize_optional_filter_uuid(parent_issue_id);
+        let assignee_user_id = Self::normalize_optional_filter_uuid(assignee_user_id);
+        let tag_id = Self::normalize_optional_filter_uuid(tag_id);
 
         let project_statuses = match self.fetch_project_statuses(project_id).await {
             Ok(statuses) => Some(statuses),
@@ -582,6 +600,17 @@ impl McpServer {
 }
 
 impl McpServer {
+    fn normalize_optional_filter_string(value: Option<String>) -> Option<String> {
+        value.and_then(|value| {
+            let trimmed = value.trim();
+            (!trimmed.is_empty()).then(|| trimmed.to_string())
+        })
+    }
+
+    fn normalize_optional_filter_uuid(value: Option<Uuid>) -> Option<Uuid> {
+        value.filter(|value| !value.is_nil())
+    }
+
     fn parse_issue_sort_field(sort_field: Option<&str>) -> Result<IssueSortField, ToolError> {
         match sort_field
             .unwrap_or("sort_order")
@@ -751,53 +780,174 @@ impl McpServer {
         project_id: Uuid,
         issue_id: Uuid,
     ) -> Vec<McpRelationshipSummary> {
-        let rel_url = self.url(&format!(
-            "/api/remote/issue-relationships?issue_id={}",
-            issue_id
-        ));
-        let response: ListIssueRelationshipsResponse =
-            match self.send_json(self.client.get(&rel_url)).await {
-                Ok(r) => r,
-                Err(_) => return Vec::new(),
-            };
-
-        if response.issue_relationships.is_empty() {
+        let Some(snapshot) = self.project_relationship_snapshot(project_id).await else {
             return Vec::new();
-        }
+        };
 
-        let issues_url = self.url(&format!("/api/remote/issues?project_id={}", project_id));
-        let issues_response: api_types::ListIssuesResponse = self
-            .send_json(self.client.get(&issues_url))
-            .await
-            .unwrap_or(api_types::ListIssuesResponse {
-                issues: Vec::new(),
-                total_count: 0,
-                limit: 0,
-                offset: 0,
-            });
-        let simple_id_map: HashMap<Uuid, &str> = issues_response
-            .issues
+        let simple_id_map = snapshot
+            .simple_id_map
             .iter()
-            .map(|i| (i.id, i.simple_id.as_str()))
+            .map(|(issue_id, simple_id): (&Uuid, &String)| (*issue_id, simple_id.as_str()))
             .collect();
 
-        response
-            .issue_relationships
+        Self::resolve_issue_relationship_summaries(issue_id, snapshot.relationships, simple_id_map)
+    }
+
+    async fn project_relationship_snapshot(
+        &self,
+        project_id: Uuid,
+    ) -> Option<ProjectRelationshipSnapshot> {
+        if let Some(snapshot) = self.cached_project_relationship_snapshot(project_id).await {
+            return Some(snapshot);
+        }
+
+        let snapshot: ProjectRelationshipSnapshot =
+            self.fetch_project_relationship_snapshot(project_id).await?;
+        self.cache_project_relationship_snapshot(project_id, snapshot.clone())
+            .await;
+        Some(snapshot)
+    }
+
+    async fn cached_project_relationship_snapshot(
+        &self,
+        project_id: Uuid,
+    ) -> Option<ProjectRelationshipSnapshot> {
+        let snapshot = self
+            .relationship_cache
+            .read()
+            .await
+            .get(&project_id)
+            .cloned();
+        snapshot.filter(ProjectRelationshipSnapshot::is_fresh)
+    }
+
+    async fn fetch_project_relationship_snapshot(
+        &self,
+        project_id: Uuid,
+    ) -> Option<ProjectRelationshipSnapshot> {
+        let issues = self.fetch_project_issues(project_id).await;
+        if issues.is_empty() {
+            return None;
+        }
+
+        let simple_id_map = issues
+            .iter()
+            .map(|issue| (issue.id, issue.simple_id.clone()))
+            .collect();
+        let relationships = self.fetch_relationship_batches(&issues).await?;
+
+        Some(ProjectRelationshipSnapshot {
+            fetched_at: Instant::now(),
+            simple_id_map,
+            relationships,
+        })
+    }
+
+    async fn fetch_project_issues(&self, project_id: Uuid) -> Vec<Issue> {
+        let mut issues = Vec::new();
+        let mut offset = 0;
+        let limit = 100;
+
+        loop {
+            let url = self.url(&format!(
+                "/api/remote/issues?project_id={project_id}&limit={limit}&offset={offset}"
+            ));
+            let response: api_types::ListIssuesResponse =
+                match self.send_json(self.client.get(&url)).await {
+                    Ok(r) => r,
+                    Err(_) => return Vec::new(),
+                };
+
+            if response.issues.is_empty() {
+                break;
+            }
+
+            offset += response.issues.len();
+            issues.extend(response.issues);
+
+            if issues.len() >= response.total_count {
+                break;
+            }
+        }
+
+        issues
+    }
+
+    async fn fetch_relationship_batches(&self, issues: &[Issue]) -> Option<Vec<IssueRelationship>> {
+        let mut all_relationships = Vec::new();
+
+        for issue_batch in issues.chunks(PROJECT_RELATIONSHIP_FETCH_CONCURRENCY) {
+            let mut join_set = tokio::task::JoinSet::new();
+
+            for issue in issue_batch {
+                let server = self.clone();
+                let rel_url = self.url(&format!(
+                    "/api/remote/issue-relationships?issue_id={}",
+                    issue.id
+                ));
+                join_set.spawn(async move { server.send_json(server.client.get(&rel_url)).await });
+            }
+
+            let mut relationship_batches = Vec::with_capacity(issue_batch.len());
+            while let Some(result) = join_set.join_next().await {
+                let response: api_types::ListIssueRelationshipsResponse = result.ok()?.ok()?;
+                relationship_batches.push(response.issue_relationships);
+            }
+
+            all_relationships.extend(Self::collect_issue_relationships(relationship_batches));
+        }
+
+        Some(Self::collect_issue_relationships(vec![all_relationships]))
+    }
+
+    fn collect_issue_relationships(
+        relationship_batches: Vec<Vec<IssueRelationship>>,
+    ) -> Vec<IssueRelationship> {
+        let mut relationships_by_id = HashMap::new();
+
+        for relationship in relationship_batches.into_iter().flatten() {
+            relationships_by_id.insert(relationship.id, relationship);
+        }
+
+        relationships_by_id.into_values().collect()
+    }
+
+    fn resolve_issue_relationship_summaries(
+        issue_id: Uuid,
+        relationships: Vec<IssueRelationship>,
+        simple_id_map: HashMap<Uuid, &str>,
+    ) -> Vec<McpRelationshipSummary> {
+        relationships
             .into_iter()
-            .map(|r| {
-                let related_simple_id = simple_id_map
-                    .get(&r.related_issue_id)
-                    .unwrap_or(&"")
-                    .to_string();
-                McpRelationshipSummary {
-                    id: r.id.to_string(),
-                    related_issue_id: r.related_issue_id.to_string(),
-                    related_simple_id,
-                    relationship_type: match r.relationship_type {
-                        IssueRelationshipType::Blocking => "blocking".to_string(),
-                        IssueRelationshipType::Related => "related".to_string(),
-                        IssueRelationshipType::HasDuplicate => "has_duplicate".to_string(),
-                    },
+            .filter_map(|relationship| {
+                if relationship.issue_id == issue_id {
+                    Some(McpRelationshipSummary {
+                        id: relationship.id.to_string(),
+                        related_issue_id: relationship.related_issue_id.to_string(),
+                        related_simple_id: simple_id_map
+                            .get(&relationship.related_issue_id)
+                            .unwrap_or(&"")
+                            .to_string(),
+                        relationship_type: match relationship.relationship_type {
+                            IssueRelationshipType::Blocking => "blocking".to_string(),
+                            IssueRelationshipType::Related => "related".to_string(),
+                            IssueRelationshipType::HasDuplicate => "has_duplicate".to_string(),
+                        },
+                    })
+                } else if relationship.related_issue_id == issue_id
+                    && relationship.relationship_type == IssueRelationshipType::Blocking
+                {
+                    Some(McpRelationshipSummary {
+                        id: relationship.id.to_string(),
+                        related_issue_id: relationship.issue_id.to_string(),
+                        related_simple_id: simple_id_map
+                            .get(&relationship.issue_id)
+                            .unwrap_or(&"")
+                            .to_string(),
+                        relationship_type: "blocked_by".to_string(),
+                    })
+                } else {
+                    None
                 }
             })
             .collect()
@@ -918,9 +1068,34 @@ impl McpServer {
     }
 }
 
+impl ProjectRelationshipSnapshot {
+    fn is_fresh(&self) -> bool {
+        self.fetched_at.elapsed() <= PROJECT_RELATIONSHIP_CACHE_TTL
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    use api_types::{IssueRelationship, ListIssueRelationshipsResponse};
+    use serde_json::json;
+
     use super::*;
+    use crate::task_server::ProjectRelationshipSnapshot;
+
+    fn relationship_fixture(
+        issue_id: Uuid,
+        related_issue_id: Uuid,
+        relationship_type: IssueRelationshipType,
+    ) -> IssueRelationship {
+        serde_json::from_value(json!({
+            "id": Uuid::new_v4(),
+            "issue_id": issue_id,
+            "related_issue_id": related_issue_id,
+            "relationship_type": relationship_type,
+            "created_at": "2026-04-12T10:00:00Z"
+        }))
+        .expect("valid issue relationship fixture")
+    }
 
     #[test]
     fn collects_all_matching_status_ids_case_insensitively() {
@@ -973,6 +1148,161 @@ mod tests {
         assert_eq!(
             McpServer::resolve_tag_filters(Some(tag_id), Some(vec![other_tag_id, tag_id])),
             (Some(tag_id), None, false)
+        );
+    }
+
+    #[test]
+    fn normalize_optional_filter_string_drops_blank_values() {
+        assert_eq!(McpServer::normalize_optional_filter_string(None), None);
+        assert_eq!(
+            McpServer::normalize_optional_filter_string(Some(String::new())),
+            None
+        );
+        assert_eq!(
+            McpServer::normalize_optional_filter_string(Some("   ".to_string())),
+            None
+        );
+    }
+
+    #[test]
+    fn normalize_optional_filter_string_trims_meaningful_values() {
+        assert_eq!(
+            McpServer::normalize_optional_filter_string(Some("  In review  ".to_string())),
+            Some("In review".to_string())
+        );
+    }
+
+    #[test]
+    fn normalize_optional_filter_uuid_drops_nil_uuid() {
+        assert_eq!(McpServer::normalize_optional_filter_uuid(None), None);
+        assert_eq!(
+            McpServer::normalize_optional_filter_uuid(Some(Uuid::nil())),
+            None
+        );
+    }
+
+    #[test]
+    fn normalize_optional_filter_uuid_preserves_real_uuid() {
+        let issue_id = Uuid::new_v4();
+
+        assert_eq!(
+            McpServer::normalize_optional_filter_uuid(Some(issue_id)),
+            Some(issue_id)
+        );
+    }
+
+    #[test]
+    fn resolve_issue_relationship_summaries_includes_incoming_blockers() {
+        let target_issue_id = Uuid::new_v4();
+        let blocker_issue_id = Uuid::new_v4();
+        let related_issue_id = Uuid::new_v4();
+
+        let summaries = McpServer::resolve_issue_relationship_summaries(
+            target_issue_id,
+            vec![
+                relationship_fixture(
+                    blocker_issue_id,
+                    target_issue_id,
+                    IssueRelationshipType::Blocking,
+                ),
+                relationship_fixture(
+                    target_issue_id,
+                    related_issue_id,
+                    IssueRelationshipType::Related,
+                ),
+            ],
+            HashMap::from([
+                (blocker_issue_id, "MIH-128"),
+                (target_issue_id, "MIH-135"),
+                (related_issue_id, "MIH-999"),
+            ]),
+        );
+
+        assert_eq!(summaries.len(), 2);
+        assert!(summaries.iter().any(|summary| {
+            summary.related_issue_id == blocker_issue_id.to_string()
+                && summary.related_simple_id == "MIH-128"
+                && summary.relationship_type == "blocked_by"
+        }));
+        assert!(summaries.iter().any(|summary| {
+            summary.related_issue_id == related_issue_id.to_string()
+                && summary.related_simple_id == "MIH-999"
+                && summary.relationship_type == "related"
+        }));
+    }
+
+    #[test]
+    fn collect_issue_relationships_deduplicates_by_relationship_id() {
+        let source_issue_id = Uuid::new_v4();
+        let related_issue_id = Uuid::new_v4();
+        let shared_relationship = relationship_fixture(
+            source_issue_id,
+            related_issue_id,
+            IssueRelationshipType::Blocking,
+        );
+        let other_relationship = relationship_fixture(
+            source_issue_id,
+            Uuid::new_v4(),
+            IssueRelationshipType::Related,
+        );
+
+        let relationships = McpServer::collect_issue_relationships(vec![
+            vec![shared_relationship.clone(), other_relationship.clone()],
+            vec![shared_relationship.clone()],
+        ]);
+
+        assert_eq!(relationships.len(), 2);
+        assert!(
+            relationships
+                .iter()
+                .any(|relationship| relationship.id == shared_relationship.id)
+        );
+        assert!(
+            relationships
+                .iter()
+                .any(|relationship| relationship.id == other_relationship.id)
+        );
+    }
+
+    #[test]
+    fn relationship_cache_entry_respects_ttl() {
+        let snapshot = ProjectRelationshipSnapshot {
+            fetched_at: std::time::Instant::now()
+                - PROJECT_RELATIONSHIP_CACHE_TTL
+                - std::time::Duration::from_secs(1),
+            simple_id_map: HashMap::new(),
+            relationships: Vec::new(),
+        };
+
+        assert!(!snapshot.is_fresh());
+    }
+
+    #[test]
+    fn parses_issue_relationships_from_api_response_envelope() {
+        let relationship = relationship_fixture(
+            Uuid::new_v4(),
+            Uuid::new_v4(),
+            IssueRelationshipType::Blocking,
+        );
+
+        let response: crate::ApiResponseEnvelope<ListIssueRelationshipsResponse> =
+            serde_json::from_value(json!({
+                "success": true,
+                "data": {
+                    "issue_relationships": [relationship]
+                },
+                "error_data": null,
+                "message": null
+            }))
+            .expect("wrapped response should parse");
+
+        assert_eq!(
+            response
+                .data
+                .expect("envelope should include response data")
+                .issue_relationships
+                .len(),
+            1
         );
     }
 }

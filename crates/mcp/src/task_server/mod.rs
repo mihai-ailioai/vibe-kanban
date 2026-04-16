@@ -1,12 +1,14 @@
 mod handler;
 mod tools;
 
-use std::path::Path;
+use std::{collections::HashMap, path::Path, sync::Arc, time::Instant};
 
 use anyhow::Context;
+use api_types::IssueRelationship;
 use db::models::{requests::ContainerQuery, workspace::WorkspaceContext};
 use rmcp::{handler::server::tool::ToolRouter, schemars};
 use serde::{Deserialize, Serialize};
+use tokio::sync::RwLock;
 use uuid::Uuid;
 
 pub(crate) use crate::ApiResponseEnvelope;
@@ -47,12 +49,20 @@ pub enum McpMode {
 }
 
 #[derive(Debug, Clone)]
+pub(super) struct ProjectRelationshipSnapshot {
+    pub(super) fetched_at: Instant,
+    pub(super) simple_id_map: HashMap<Uuid, String>,
+    pub(super) relationships: Vec<IssueRelationship>,
+}
+
+#[derive(Debug, Clone)]
 pub struct McpServer {
     client: reqwest::Client,
     base_url: String,
     tool_router: ToolRouter<McpServer>,
     context: Option<McpContext>,
     mode: McpMode,
+    pub(super) relationship_cache: Arc<RwLock<HashMap<Uuid, ProjectRelationshipSnapshot>>>,
 }
 
 impl McpServer {
@@ -63,6 +73,7 @@ impl McpServer {
             tool_router: Self::global_mode_router(),
             context: None,
             mode: McpMode::Global,
+            relationship_cache: Arc::new(RwLock::new(HashMap::new())),
         }
     }
 
@@ -73,6 +84,7 @@ impl McpServer {
             tool_router: Self::orchestrator_mode_router(),
             context: None,
             mode: McpMode::Orchestrator,
+            relationship_cache: Arc::new(RwLock::new(HashMap::new())),
         }
     }
 
@@ -241,5 +253,45 @@ impl McpServer {
         let api_response: ApiResponseEnvelope<api_types::Project> = response.json().await.ok()?;
         let project = api_response.data?;
         Some(project.organization_id)
+    }
+
+    pub(super) async fn cache_project_relationship_snapshot(
+        &self,
+        project_id: Uuid,
+        snapshot: ProjectRelationshipSnapshot,
+    ) {
+        self.relationship_cache
+            .write()
+            .await
+            .insert(project_id, snapshot);
+    }
+
+    pub(super) async fn invalidate_relationship_cache(&self) {
+        self.relationship_cache.write().await.clear();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn invalidate_relationship_cache_clears_cached_projects() {
+        let server = McpServer::new_global("http://127.0.0.1:3000");
+
+        server
+            .cache_project_relationship_snapshot(
+                Uuid::new_v4(),
+                ProjectRelationshipSnapshot {
+                    fetched_at: Instant::now(),
+                    simple_id_map: HashMap::new(),
+                    relationships: Vec::new(),
+                },
+            )
+            .await;
+
+        server.invalidate_relationship_cache().await;
+
+        assert!(server.relationship_cache.read().await.is_empty());
     }
 }

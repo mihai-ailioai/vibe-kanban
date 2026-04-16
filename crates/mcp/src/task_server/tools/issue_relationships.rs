@@ -66,6 +66,8 @@ impl McpServer {
                 Err(e) => return Ok(Self::tool_error(e)),
             };
 
+        self.invalidate_relationship_cache().await;
+
         McpServer::success(&McpCreateIssueRelationshipResponse {
             relationship_id: response.data.id.to_string(),
         })
@@ -85,6 +87,8 @@ impl McpServer {
         if let Err(e) = self.send_empty_json(self.client.delete(&url)).await {
             return Ok(Self::tool_error(e));
         }
+
+        self.invalidate_relationship_cache().await;
 
         McpServer::success(&McpDeleteIssueRelationshipResponse {
             success: true,
