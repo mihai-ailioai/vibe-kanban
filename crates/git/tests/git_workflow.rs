@@ -339,6 +339,88 @@ fn create_unicode_branch_and_list() {
     assert!(names.iter().any(|n| n == bname));
 }
 
+#[test]
+fn ensure_local_branch_checked_out_reuses_existing_workspace_branch() {
+    let td = TempDir::new().unwrap();
+    let repo_path = init_repo_main(&td);
+    let s = GitService::new();
+
+    write_file(&repo_path, "base.txt", "base\n");
+    let _ = s.commit(&repo_path, "base").unwrap();
+
+    create_branch(&repo_path, "feature/workspace");
+    checkout_branch(&repo_path, "main");
+
+    s.ensure_local_branch_checked_out(&repo_path, "feature/workspace", "main")
+        .unwrap();
+
+    let head = s.get_head_info(&repo_path).unwrap();
+    assert_eq!(head.branch, "feature/workspace");
+}
+
+#[test]
+fn ensure_local_branch_checked_out_creates_workspace_branch_from_target_branch() {
+    let td = TempDir::new().unwrap();
+    let repo_path = init_repo_main(&td);
+    let s = GitService::new();
+
+    write_file(&repo_path, "base.txt", "base\n");
+    let _ = s.commit(&repo_path, "base").unwrap();
+
+    let target_oid = s.get_branch_oid(&repo_path, "main").unwrap();
+
+    s.ensure_local_branch_checked_out(&repo_path, "feature/workspace", "main")
+        .unwrap();
+
+    let head = s.get_head_info(&repo_path).unwrap();
+    assert_eq!(head.branch, "feature/workspace");
+    assert_eq!(
+        s.get_branch_oid(&repo_path, "feature/workspace").unwrap(),
+        target_oid
+    );
+}
+
+#[test]
+fn ensure_local_branch_checked_out_fails_when_target_branch_missing_locally() {
+    let td = TempDir::new().unwrap();
+    let repo_path = init_repo_main(&td);
+    let s = GitService::new();
+
+    let err = s
+        .ensure_local_branch_checked_out(&repo_path, "feature/workspace", "missing")
+        .unwrap_err();
+
+    assert!(matches!(err, git::GitServiceError::BranchNotFound(branch) if branch == "missing"));
+}
+
+#[test]
+fn strict_dirty_check_counts_untracked_files_as_dirty() {
+    let td = TempDir::new().unwrap();
+    let repo_path = init_repo_main(&td);
+    let s = GitService::new();
+
+    write_file(&repo_path, "tracked.txt", "tracked\n");
+    write_file(&repo_path, "staged.txt", "staged\n");
+    let _ = s.commit(&repo_path, "seed tracked files").unwrap();
+
+    write_file(&repo_path, "tracked.txt", "tracked but modified\n");
+    write_file(&repo_path, "staged.txt", "staged but modified\n");
+    add_path(&repo_path, "staged.txt");
+    write_file(&repo_path, "untracked.txt", "dirty\n");
+
+    let err = s
+        .ensure_repo_clean_including_untracked(&repo_path)
+        .unwrap_err();
+
+    assert!(matches!(
+        err,
+        git::GitServiceError::WorktreeDirty(branch, details)
+            if branch == "main"
+                && details.contains("tracked change")
+                && details.contains("untracked file")
+    ));
+}
+
 #[cfg(unix)]
 #[test]
 fn worktree_diff_permission_only_change() {

@@ -226,6 +226,84 @@ impl WorkspaceRepo {
         Ok(())
     }
 
+    pub async fn delete_by_workspace_id(
+        pool: &SqlitePool,
+        workspace_id: Uuid,
+    ) -> Result<u64, sqlx::Error> {
+        let result = sqlx::query!(
+            "DELETE FROM workspace_repos WHERE workspace_id = $1",
+            workspace_id
+        )
+        .execute(pool)
+        .await?;
+
+        Ok(result.rows_affected())
+    }
+
+    pub async fn sync_for_workspace(
+        pool: &SqlitePool,
+        workspace_id: Uuid,
+        repos: &[CreateWorkspaceRepo],
+    ) -> Result<Vec<Self>, sqlx::Error> {
+        let mut tx = pool.begin().await?;
+
+        if repos.is_empty() {
+            sqlx::query!(
+                "DELETE FROM workspace_repos WHERE workspace_id = $1",
+                workspace_id
+            )
+            .execute(&mut *tx)
+            .await?;
+
+            tx.commit().await?;
+            return Ok(Vec::new());
+        }
+
+        let repo_ids = repos.iter().map(|repo| repo.repo_id).collect::<Vec<_>>();
+
+        let mut delete_query = sqlx::QueryBuilder::<sqlx::Sqlite>::new(
+            "DELETE FROM workspace_repos WHERE workspace_id = ",
+        );
+        delete_query.push_bind(workspace_id);
+        delete_query.push(" AND repo_id NOT IN (");
+        let mut separated = delete_query.separated(", ");
+        for repo_id in &repo_ids {
+            separated.push_bind(repo_id);
+        }
+        separated.push_unseparated(")");
+
+        delete_query.build().execute(&mut *tx).await?;
+
+        let mut results = Vec::with_capacity(repos.len());
+        for repo in repos {
+            let id = Uuid::new_v4();
+            let workspace_repo = sqlx::query_as!(
+                WorkspaceRepo,
+                r#"INSERT INTO workspace_repos (id, workspace_id, repo_id, target_branch)
+                   VALUES ($1, $2, $3, $4)
+                   ON CONFLICT(workspace_id, repo_id)
+                   DO UPDATE SET target_branch = excluded.target_branch,
+                                 updated_at = datetime('now', 'subsec')
+                   RETURNING id as "id!: Uuid",
+                             workspace_id as "workspace_id!: Uuid",
+                             repo_id as "repo_id!: Uuid",
+                             target_branch,
+                             created_at as "created_at!: DateTime<Utc>",
+                             updated_at as "updated_at!: DateTime<Utc>""#,
+                id,
+                workspace_id,
+                repo.repo_id,
+                repo.target_branch
+            )
+            .fetch_one(&mut *tx)
+            .await?;
+            results.push(workspace_repo);
+        }
+
+        tx.commit().await?;
+        Ok(results)
+    }
+
     pub async fn update_target_branch_for_children_of_workspace(
         pool: &SqlitePool,
         parent_workspace_id: Uuid,
@@ -274,5 +352,208 @@ impl WorkspaceRepo {
                 copy_files: row.copy_files,
             })
             .collect())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{path::Path, str::FromStr};
+
+    use sqlx::{ConnectOptions, SqlitePool, sqlite::SqliteConnectOptions};
+    use tokio::runtime::Builder;
+
+    use super::{CreateWorkspaceRepo, WorkspaceRepo};
+    use crate::models::{
+        repo::Repo,
+        workspace::{CreateWorkspace, Workspace, WorkspaceMode},
+    };
+
+    async fn test_pool() -> SqlitePool {
+        let db_path = std::env::temp_dir().join(format!(
+            "db-workspace-repo-tests-{}.sqlite",
+            uuid::Uuid::new_v4()
+        ));
+        let database_url = format!("sqlite://{}", db_path.to_string_lossy());
+
+        let options = SqliteConnectOptions::from_str(&database_url)
+            .unwrap()
+            .create_if_missing(true)
+            .disable_statement_logging();
+
+        let pool = SqlitePool::connect_with(options).await.unwrap();
+        sqlx::query("PRAGMA foreign_keys = ON")
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::migrate!("./migrations").run(&pool).await.unwrap();
+        pool
+    }
+
+    fn run_async_test<F>(future: F)
+    where
+        F: std::future::Future<Output = ()>,
+    {
+        Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap()
+            .block_on(future);
+    }
+
+    async fn create_workspace(pool: &SqlitePool, label: &str) -> Workspace {
+        let workspace_id = uuid::Uuid::new_v4();
+        Workspace::create(
+            pool,
+            &CreateWorkspace {
+                branch: format!("branch-{label}-{workspace_id}"),
+                workspace_mode: WorkspaceMode::InPlaceGit,
+                name: Some(format!("Workspace {label}")),
+            },
+            workspace_id,
+        )
+        .await
+        .unwrap()
+    }
+
+    async fn create_repo(pool: &SqlitePool, name: &str) -> Repo {
+        let repo_path = std::env::temp_dir().join(format!(
+            "workspace-repo-model-repo-{}-{}",
+            name,
+            uuid::Uuid::new_v4()
+        ));
+        Repo::find_or_create(pool, Path::new(&repo_path), name)
+            .await
+            .unwrap()
+    }
+
+    #[test]
+    fn sync_for_workspace_replaces_existing_workspace_repo_rows() {
+        run_async_test(async {
+            let pool = test_pool().await;
+            let workspace = create_workspace(&pool, "sync").await;
+            let repo_one = create_repo(&pool, "repo-one").await;
+            let repo_two = create_repo(&pool, "repo-two").await;
+
+            WorkspaceRepo::create_many(
+                &pool,
+                workspace.id,
+                &[CreateWorkspaceRepo {
+                    repo_id: repo_one.id,
+                    target_branch: "main".to_string(),
+                }],
+            )
+            .await
+            .unwrap();
+
+            let synced = WorkspaceRepo::sync_for_workspace(
+                &pool,
+                workspace.id,
+                &[CreateWorkspaceRepo {
+                    repo_id: repo_two.id,
+                    target_branch: "develop".to_string(),
+                }],
+            )
+            .await
+            .unwrap();
+
+            assert_eq!(synced.len(), 1);
+            assert_eq!(synced[0].repo_id, repo_two.id);
+            assert_eq!(synced[0].target_branch, "develop");
+
+            let fetched = WorkspaceRepo::find_by_workspace_id(&pool, workspace.id)
+                .await
+                .unwrap();
+            assert_eq!(fetched.len(), 1);
+            assert_eq!(fetched[0].repo_id, repo_two.id);
+            assert_eq!(fetched[0].target_branch, "develop");
+        });
+    }
+
+    #[test]
+    fn sync_for_workspace_upserts_existing_rows_without_churning_ids() {
+        run_async_test(async {
+            let pool = test_pool().await;
+            let workspace = create_workspace(&pool, "upsert").await;
+            let repo_one = create_repo(&pool, "repo-one").await;
+            let repo_two = create_repo(&pool, "repo-two").await;
+
+            let created = WorkspaceRepo::create_many(
+                &pool,
+                workspace.id,
+                &[
+                    CreateWorkspaceRepo {
+                        repo_id: repo_one.id,
+                        target_branch: "main".to_string(),
+                    },
+                    CreateWorkspaceRepo {
+                        repo_id: repo_two.id,
+                        target_branch: "develop".to_string(),
+                    },
+                ],
+            )
+            .await
+            .unwrap();
+
+            let synced = WorkspaceRepo::sync_for_workspace(
+                &pool,
+                workspace.id,
+                &[CreateWorkspaceRepo {
+                    repo_id: repo_one.id,
+                    target_branch: "release".to_string(),
+                }],
+            )
+            .await
+            .unwrap();
+
+            assert_eq!(synced.len(), 1);
+            assert_eq!(synced[0].id, created[0].id);
+            assert_eq!(synced[0].repo_id, repo_one.id);
+            assert_eq!(synced[0].target_branch, "release");
+
+            let fetched = WorkspaceRepo::find_by_workspace_id(&pool, workspace.id)
+                .await
+                .unwrap();
+            assert_eq!(fetched.len(), 1);
+            assert_eq!(fetched[0].id, created[0].id);
+            assert_eq!(fetched[0].repo_id, repo_one.id);
+            assert_eq!(fetched[0].target_branch, "release");
+        });
+    }
+
+    #[test]
+    fn delete_by_workspace_id_removes_all_rows_for_workspace() {
+        run_async_test(async {
+            let pool = test_pool().await;
+            let workspace = create_workspace(&pool, "delete").await;
+            let repo_one = create_repo(&pool, "repo-one").await;
+            let repo_two = create_repo(&pool, "repo-two").await;
+
+            WorkspaceRepo::create_many(
+                &pool,
+                workspace.id,
+                &[
+                    CreateWorkspaceRepo {
+                        repo_id: repo_one.id,
+                        target_branch: "main".to_string(),
+                    },
+                    CreateWorkspaceRepo {
+                        repo_id: repo_two.id,
+                        target_branch: "develop".to_string(),
+                    },
+                ],
+            )
+            .await
+            .unwrap();
+
+            let deleted = WorkspaceRepo::delete_by_workspace_id(&pool, workspace.id)
+                .await
+                .unwrap();
+            assert_eq!(deleted, 2);
+
+            let fetched = WorkspaceRepo::find_by_workspace_id(&pool, workspace.id)
+                .await
+                .unwrap();
+            assert!(fetched.is_empty());
+        });
     }
 }

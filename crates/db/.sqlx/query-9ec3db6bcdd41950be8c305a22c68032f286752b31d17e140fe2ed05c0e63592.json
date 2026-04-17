@@ -1,0 +1,50 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO workspace_repos (id, workspace_id, repo_id, target_branch)\n                   VALUES ($1, $2, $3, $4)\n                   ON CONFLICT(workspace_id, repo_id)\n                   DO UPDATE SET target_branch = excluded.target_branch,\n                                 updated_at = datetime('now', 'subsec')\n                   RETURNING id as \"id!: Uuid\",\n                             workspace_id as \"workspace_id!: Uuid\",\n                             repo_id as \"repo_id!: Uuid\",\n                             target_branch,\n                             created_at as \"created_at!: DateTime<Utc>\",\n                             updated_at as \"updated_at!: DateTime<Utc>\"",
+  "describe": {
+    "columns": [
+      {
+        "name": "id!: Uuid",
+        "ordinal": 0,
+        "type_info": "Blob"
+      },
+      {
+        "name": "workspace_id!: Uuid",
+        "ordinal": 1,
+        "type_info": "Blob"
+      },
+      {
+        "name": "repo_id!: Uuid",
+        "ordinal": 2,
+        "type_info": "Blob"
+      },
+      {
+        "name": "target_branch",
+        "ordinal": 3,
+        "type_info": "Text"
+      },
+      {
+        "name": "created_at!: DateTime<Utc>",
+        "ordinal": 4,
+        "type_info": "Text"
+      },
+      {
+        "name": "updated_at!: DateTime<Utc>",
+        "ordinal": 5,
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Right": 4
+    },
+    "nullable": [
+      true,
+      false,
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "9ec3db6bcdd41950be8c305a22c68032f286752b31d17e140fe2ed05c0e63592"
+}

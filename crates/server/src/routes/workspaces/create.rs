@@ -14,6 +14,7 @@ use db::models::{
 use deployment::Deployment;
 use executors::profile::ExecutorConfig;
 use git::GitService;
+use local_deployment::container::cleanup_in_place_git_workspace_root;
 use services::services::container::ContainerService;
 use sqlx::SqlitePool;
 use utils::response::ApiResponse;
@@ -435,8 +436,18 @@ async fn cleanup_failed_create_and_start_workspace(pool: &SqlitePool, workspace_
 
     if let Some(workspace_dir) = workspace_dir {
         tokio::spawn(async move {
-            if let Err(e) = WorkspaceManager::cleanup_workspace(&workspace_dir, &repositories).await
-            {
+            let cleanup_result = match workspace.workspace_mode {
+                WorkspaceMode::InPlaceGit => cleanup_in_place_git_workspace_root(&workspace_dir)
+                    .await
+                    .map_err(|e| e.to_string()),
+                WorkspaceMode::GitWorktree | WorkspaceMode::InPlaceDirectory => {
+                    WorkspaceManager::cleanup_workspace(&workspace_dir, &repositories)
+                        .await
+                        .map_err(|e| e.to_string())
+                }
+            };
+
+            if let Err(e) = cleanup_result {
                 tracing::error!(
                     "Background cleanup failed for workspace {} at {}: {}",
                     workspace_id,
@@ -690,6 +701,7 @@ pub async fn create_and_start_workspace(
 #[cfg(test)]
 mod tests {
     use std::{
+        fs,
         path::Path,
         str::FromStr,
         sync::{Arc, Mutex},
@@ -712,6 +724,7 @@ mod tests {
             session::{CreateSession, Session},
             workspace::{CreateWorkspace, Workspace, WorkspaceMode},
             workspace_repo::WorkspaceRepo,
+            workspace_repo_claim::{CreateWorkspaceRepoClaim, WorkspaceRepoClaim},
             workspace_source::{WorkspaceSource, WorkspaceSourceKind},
         },
     };
@@ -803,6 +816,110 @@ mod tests {
             .await
             .unwrap();
         assert!(repos.is_empty());
+
+        let claims = WorkspaceRepoClaim::find_by_workspace_id(pool, workspace_id)
+            .await
+            .unwrap();
+        assert!(claims.is_empty());
+    }
+
+    #[test]
+    fn cleanup_failed_create_and_start_workspace_removes_in_place_git_claims() {
+        run_async_test(async {
+            let pool = test_pool().await;
+            let workspace_id = Uuid::new_v4();
+            let workspace = Workspace::create(
+                &pool,
+                &CreateWorkspace {
+                    branch: format!("claim-cleanup-{workspace_id}"),
+                    workspace_mode: WorkspaceMode::InPlaceGit,
+                    name: Some("Claim cleanup workspace".to_string()),
+                },
+                workspace_id,
+            )
+            .await
+            .unwrap();
+            let repo_path = std::env::temp_dir().join(format!(
+                "create-route-claim-cleanup-repo-{}",
+                Uuid::new_v4()
+            ));
+            let repo = Repo::find_or_create(&pool, Path::new(&repo_path), "Claim cleanup repo")
+                .await
+                .unwrap();
+
+            WorkspaceRepoClaim::create_many(
+                &pool,
+                workspace.id,
+                &[CreateWorkspaceRepoClaim { repo_id: repo.id }],
+            )
+            .await
+            .unwrap();
+
+            super::cleanup_failed_create_and_start_workspace(&pool, workspace.id).await;
+
+            assert_workspace_state_deleted(&pool, workspace.id).await;
+        });
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn cleanup_failed_create_and_start_workspace_uses_in_place_git_root_cleanup() {
+        run_async_test(async {
+            let pool = test_pool().await;
+            let workspace_id = Uuid::new_v4();
+            let workspace = Workspace::create(
+                &pool,
+                &CreateWorkspace {
+                    branch: format!("claim-cleanup-root-{workspace_id}"),
+                    workspace_mode: WorkspaceMode::InPlaceGit,
+                    name: Some("Claim cleanup root workspace".to_string()),
+                },
+                workspace_id,
+            )
+            .await
+            .unwrap();
+
+            let real_repo_dir =
+                std::env::temp_dir().join(format!("create-route-real-repo-{}", Uuid::new_v4()));
+            fs::create_dir_all(&real_repo_dir).unwrap();
+            fs::write(real_repo_dir.join("README.md"), "repo\n").unwrap();
+
+            let workspace_root = workspace_manager::WorkspaceManager::get_workspace_base_dir()
+                .join(format!("create-route-cleanup-root-{}", Uuid::new_v4()));
+            fs::create_dir_all(&workspace_root).unwrap();
+            std::os::unix::fs::symlink(&real_repo_dir, workspace_root.join("repo")).unwrap();
+
+            Workspace::update_container_ref(&pool, workspace.id, &workspace_root.to_string_lossy())
+                .await
+                .unwrap();
+
+            let repo = Repo::find_or_create(&pool, Path::new(&real_repo_dir), "Cleanup root repo")
+                .await
+                .unwrap();
+            WorkspaceRepoClaim::create_many(
+                &pool,
+                workspace.id,
+                &[CreateWorkspaceRepoClaim { repo_id: repo.id }],
+            )
+            .await
+            .unwrap();
+
+            super::cleanup_failed_create_and_start_workspace(&pool, workspace.id).await;
+            assert_workspace_state_deleted(&pool, workspace.id).await;
+
+            for _ in 0..20 {
+                if !workspace_root.exists() {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+            }
+
+            assert!(!workspace_root.exists());
+            assert!(real_repo_dir.exists());
+            assert!(real_repo_dir.join("README.md").exists());
+
+            let _ = tokio::fs::remove_dir_all(&real_repo_dir).await;
+        });
     }
 
     #[test]

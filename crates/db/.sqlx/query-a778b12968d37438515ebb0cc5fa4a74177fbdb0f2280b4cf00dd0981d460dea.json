@@ -1,0 +1,44 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO workspace_repo_claims (id, workspace_id, repo_id)\n                   VALUES ($1, $2, $3)\n                   RETURNING id as \"id!: Uuid\",\n                             workspace_id as \"workspace_id!: Uuid\",\n                             repo_id as \"repo_id!: Uuid\",\n                             created_at as \"created_at!: DateTime<Utc>\",\n                             updated_at as \"updated_at!: DateTime<Utc>\"",
+  "describe": {
+    "columns": [
+      {
+        "name": "id!: Uuid",
+        "ordinal": 0,
+        "type_info": "Text"
+      },
+      {
+        "name": "workspace_id!: Uuid",
+        "ordinal": 1,
+        "type_info": "Text"
+      },
+      {
+        "name": "repo_id!: Uuid",
+        "ordinal": 2,
+        "type_info": "Text"
+      },
+      {
+        "name": "created_at!: DateTime<Utc>",
+        "ordinal": 3,
+        "type_info": "Text"
+      },
+      {
+        "name": "updated_at!: DateTime<Utc>",
+        "ordinal": 4,
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Right": 3
+    },
+    "nullable": [
+      true,
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "a778b12968d37438515ebb0cc5fa4a74177fbdb0f2280b4cf00dd0981d460dea"
+}
