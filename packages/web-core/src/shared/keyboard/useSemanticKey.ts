@@ -1,6 +1,7 @@
 import { useMemo } from 'react';
 import type { EnableOnFormTags } from '@/shared/keyboard/types';
 import { Action, Scope, getKeysFor } from '@/shared/keyboard/registry';
+import { withAppKeyboardTargetGuard } from '@/shared/keyboard/shortcutGuards';
 import { useHotkeys } from 'react-hotkeys-hook';
 
 export interface SemanticKeyOptions {
@@ -33,6 +34,10 @@ export function createSemanticHook<A extends Action>(action: A) {
 
     // Use 'when' as alias for 'enabled' if provided
     const isEnabled = when !== undefined ? when : enabled;
+    const hotkeysEnabled = useMemo(
+      () => withAppKeyboardTargetGuard(isEnabled),
+      [isEnabled]
+    );
 
     // Memoize to get stable array references and prevent unnecessary re-registrations
     const keys = useMemo(() => getKeysFor(action, scope), [scope]);
@@ -51,7 +56,7 @@ export function createSemanticHook<A extends Action>(action: A) {
         }
       },
       {
-        enabled,
+        enabled: hotkeysEnabled,
         enableOnContentEditable,
         enableOnFormTags,
         preventDefault,
@@ -64,6 +69,7 @@ export function createSemanticHook<A extends Action>(action: A) {
         enableOnFormTags,
         preventDefault,
         handler,
+        hotkeysEnabled,
         isEnabled,
       ]
     );

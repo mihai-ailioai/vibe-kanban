@@ -1,12 +1,11 @@
 import { useCallback, useEffect, useMemo, useRef } from 'react';
-import { Terminal } from '@xterm/xterm';
-import { FitAddon } from '@xterm/addon-fit';
-import { WebLinksAddon } from '@xterm/addon-web-links';
-import '@xterm/xterm/css/xterm.css';
 
 import { useTheme } from '@/shared/hooks/useTheme';
+import { createTerminalInstance } from '@/shared/components/xterm-instance-runtime';
+import { TERMINAL_SHORTCUTS_ROOT_ATTR } from '@/shared/keyboard/shortcutGuards';
 import { getTerminalTheme } from '@/shared/lib/terminalTheme';
 import { useTerminal } from '@/shared/hooks/useTerminal';
+import type { FitAddon, Terminal } from '@/shared/lib/terminalAdapter';
 
 interface XTermInstanceProps {
   tabId: string;
@@ -49,13 +48,14 @@ export function XTermInstance({
   }, [tabId, getTerminalConnection]);
 
   useEffect(() => {
-    if (!containerRef.current) return;
+    const container = containerRef.current;
+    if (!container) return;
 
     const existing = getTerminalInstance(tabId);
     if (existing) {
       const { terminal, fitAddon } = existing;
       if (terminal.element) {
-        containerRef.current.appendChild(terminal.element);
+        container.appendChild(terminal.element);
         fitAddon.fit();
       }
       terminalRef.current = terminal;
@@ -65,45 +65,56 @@ export function XTermInstance({
 
     if (terminalRef.current) return;
 
-    const terminal = new Terminal({
-      cursorBlink: true,
-      fontSize: 12,
-      fontFamily: '"IBM Plex Mono", monospace',
-      theme: getTerminalTheme(),
-    });
+    let isCancelled = false;
+    let mountedTerminal: Terminal | null = null;
 
-    const fitAddon = new FitAddon();
-    const webLinksAddon = new WebLinksAddon();
+    void (async () => {
+      const latestExisting = getTerminalInstance(tabId);
+      if (latestExisting) {
+        const { terminal, fitAddon } = latestExisting;
+        if (!isCancelled && terminal.element) {
+          container.appendChild(terminal.element);
+          fitAddon.fit();
+        }
+        terminalRef.current = terminal;
+        fitAddonRef.current = fitAddon;
+        return;
+      }
 
-    terminal.loadAddon(fitAddon);
-    terminal.loadAddon(webLinksAddon);
-    terminal.open(containerRef.current);
+      const { terminal, fitAddon } = await createTerminalInstance(container);
 
-    fitAddon.fit();
-    initialSizeRef.current = { cols: terminal.cols, rows: terminal.rows };
+      if (isCancelled) {
+        terminal.dispose();
+        return;
+      }
 
-    terminalRef.current = terminal;
-    fitAddonRef.current = fitAddon;
+      mountedTerminal = terminal;
+      initialSizeRef.current = { cols: terminal.cols, rows: terminal.rows };
 
-    if (!getTerminalConnection(tabId)) {
-      createTerminalConnection(
-        tabId,
-        endpoint,
-        (data) => terminal?.write(data),
-        onClose
-      );
-    }
+      terminalRef.current = terminal;
+      fitAddonRef.current = fitAddon;
 
-    registerTerminalInstance(tabId, terminal, fitAddon);
+      if (!getTerminalConnection(tabId)) {
+        createTerminalConnection(
+          tabId,
+          endpoint,
+          (data: string) => terminal.write(data),
+          onClose
+        );
+      }
 
-    terminal.onData((data) => {
-      const conn = getTerminalConnection(tabId);
-      conn?.send(data);
-    });
+      registerTerminalInstance(tabId, terminal, fitAddon);
+
+      terminal.onData((data: string) => {
+        const conn = getTerminalConnection(tabId);
+        conn?.send(data);
+      });
+    })();
 
     return () => {
-      if (terminal.element && terminal.element.parentNode) {
-        terminal.element.parentNode.removeChild(terminal.element);
+      isCancelled = true;
+      if (mountedTerminal?.element && mountedTerminal.element.parentNode) {
+        mountedTerminal.element.parentNode.removeChild(mountedTerminal.element);
       }
       terminalRef.current = null;
       fitAddonRef.current = null;
@@ -137,7 +148,11 @@ export function XTermInstance({
 
   return (
     <div ref={resizeRef} className="w-full h-full px-2 py-1">
-      <div ref={containerRef} className="w-full h-full" />
+      <div
+        ref={containerRef}
+        className="w-full h-full"
+        {...{ [TERMINAL_SHORTCUTS_ROOT_ATTR]: '' }}
+      />
     </div>
   );
 }

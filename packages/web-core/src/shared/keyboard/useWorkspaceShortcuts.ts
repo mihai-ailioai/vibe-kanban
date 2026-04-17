@@ -8,11 +8,16 @@ import {
   ActionTargetType,
 } from '@/shared/types/actions';
 import { Scope } from '@/shared/keyboard/registry';
+import {
+  areAppKeyboardShortcutsEnabled,
+  withAppKeyboardCallbackGuard,
+} from '@/shared/keyboard/shortcutGuards';
 
 const SEQUENCE_TIMEOUT_MS = 1500;
 
 const OPTIONS = {
   scopes: [Scope.WORKSPACE],
+  enabled: (event: KeyboardEvent) => areAppKeyboardShortcutsEnabled(event),
   sequenceTimeout: SEQUENCE_TIMEOUT_MS,
 } as const;
 
@@ -50,32 +55,120 @@ export function useWorkspaceShortcuts() {
     }
   }, []);
 
-  useHotkeys('g>s', () => execute(Actions.Settings), OPTIONS);
-  useHotkeys('g>n', () => execute(Actions.NewWorkspace), OPTIONS);
+  useHotkeys(
+    'g>s',
+    withAppKeyboardCallbackGuard(() => execute(Actions.Settings)),
+    OPTIONS
+  );
+  useHotkeys(
+    'g>n',
+    withAppKeyboardCallbackGuard(() => execute(Actions.NewWorkspace)),
+    OPTIONS
+  );
 
-  useHotkeys('w>d', () => execute(Actions.DuplicateWorkspace), OPTIONS);
-  useHotkeys('w>r', () => execute(Actions.RenameWorkspace), OPTIONS);
-  useHotkeys('w>p', () => execute(Actions.PinWorkspace), OPTIONS);
-  useHotkeys('w>a', () => execute(Actions.ArchiveWorkspace), OPTIONS);
-  useHotkeys('w>x', () => execute(Actions.DeleteWorkspace), OPTIONS);
+  useHotkeys(
+    'w>d',
+    withAppKeyboardCallbackGuard(() => execute(Actions.DuplicateWorkspace)),
+    OPTIONS
+  );
+  useHotkeys(
+    'w>r',
+    withAppKeyboardCallbackGuard(() => execute(Actions.RenameWorkspace)),
+    OPTIONS
+  );
+  useHotkeys(
+    'w>p',
+    withAppKeyboardCallbackGuard(() => execute(Actions.PinWorkspace)),
+    OPTIONS
+  );
+  useHotkeys(
+    'w>a',
+    withAppKeyboardCallbackGuard(() => execute(Actions.ArchiveWorkspace)),
+    OPTIONS
+  );
+  useHotkeys(
+    'w>x',
+    withAppKeyboardCallbackGuard(() => execute(Actions.DeleteWorkspace)),
+    OPTIONS
+  );
 
-  useHotkeys('v>c', () => execute(Actions.ToggleChangesMode), OPTIONS);
-  useHotkeys('v>l', () => execute(Actions.ToggleLogsMode), OPTIONS);
-  useHotkeys('v>p', () => execute(Actions.TogglePreviewMode), OPTIONS);
-  useHotkeys('v>s', () => execute(Actions.ToggleLeftSidebar), OPTIONS);
-  useHotkeys('v>h', () => execute(Actions.ToggleLeftMainPanel), OPTIONS);
+  useHotkeys(
+    'v>c',
+    withAppKeyboardCallbackGuard(() => execute(Actions.ToggleChangesMode)),
+    OPTIONS
+  );
+  useHotkeys(
+    'v>l',
+    withAppKeyboardCallbackGuard(() => execute(Actions.ToggleLogsMode)),
+    OPTIONS
+  );
+  useHotkeys(
+    'v>p',
+    withAppKeyboardCallbackGuard(() => execute(Actions.TogglePreviewMode)),
+    OPTIONS
+  );
+  useHotkeys(
+    'v>s',
+    withAppKeyboardCallbackGuard(() => execute(Actions.ToggleLeftSidebar)),
+    OPTIONS
+  );
+  useHotkeys(
+    'v>h',
+    withAppKeyboardCallbackGuard(() => execute(Actions.ToggleLeftMainPanel)),
+    OPTIONS
+  );
 
-  useHotkeys('x>p', () => execute(Actions.GitCreatePR), OPTIONS);
-  useHotkeys('x>m', () => execute(Actions.GitMerge), OPTIONS);
-  useHotkeys('x>r', () => execute(Actions.GitRebase), OPTIONS);
-  useHotkeys('x>u', () => execute(Actions.GitPush), OPTIONS);
+  useHotkeys(
+    'x>p',
+    withAppKeyboardCallbackGuard(() => execute(Actions.GitCreatePR)),
+    OPTIONS
+  );
+  useHotkeys(
+    'x>m',
+    withAppKeyboardCallbackGuard(() => execute(Actions.GitMerge)),
+    OPTIONS
+  );
+  useHotkeys(
+    'x>r',
+    withAppKeyboardCallbackGuard(() => execute(Actions.GitRebase)),
+    OPTIONS
+  );
+  useHotkeys(
+    'x>u',
+    withAppKeyboardCallbackGuard(() => execute(Actions.GitPush)),
+    OPTIONS
+  );
 
-  useHotkeys('y>p', () => execute(Actions.CopyWorkspacePath), OPTIONS);
-  useHotkeys('y>l', () => execute(Actions.CopyRawLogs), OPTIONS);
+  useHotkeys(
+    'y>p',
+    withAppKeyboardCallbackGuard(() => execute(Actions.CopyWorkspacePath)),
+    OPTIONS
+  );
+  useHotkeys(
+    'y>l',
+    withAppKeyboardCallbackGuard(() => execute(Actions.CopyRawLogs)),
+    OPTIONS
+  );
 
-  useHotkeys('t>d', () => execute(Actions.ToggleDevServer), OPTIONS);
-  useHotkeys('t>w', () => execute(Actions.ToggleWrapLines), OPTIONS);
+  useHotkeys(
+    't>d',
+    withAppKeyboardCallbackGuard(() => execute(Actions.ToggleDevServer)),
+    OPTIONS
+  );
+  useHotkeys(
+    't>w',
+    withAppKeyboardCallbackGuard(() => execute(Actions.ToggleWrapLines)),
+    OPTIONS
+  );
 
-  useHotkeys('r>s', () => execute(Actions.RunSetupScript), OPTIONS);
-  useHotkeys('r>c', () => execute(Actions.RunCleanupScript), OPTIONS);
+  useHotkeys(
+    'r>s',
+    withAppKeyboardCallbackGuard(() => execute(Actions.RunSetupScript)),
+    OPTIONS
+  );
+  useHotkeys(
+    'r>c',
+    withAppKeyboardCallbackGuard(() => execute(Actions.RunCleanupScript)),
+    OPTIONS
+  );
 }

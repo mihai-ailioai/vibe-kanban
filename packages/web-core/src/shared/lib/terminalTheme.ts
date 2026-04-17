@@ -1,4 +1,4 @@
-import type { ITheme } from '@xterm/xterm';
+import type { ITheme } from '@/shared/lib/terminalAdapter';
 
 /**
  * Convert HSL CSS variable value (e.g., "210 40% 98%") to hex color.

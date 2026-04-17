@@ -8,6 +8,10 @@ import {
   ActionTargetType,
 } from '@/shared/types/actions';
 import { Scope } from '@/shared/keyboard/registry';
+import {
+  areAppKeyboardShortcutsEnabled,
+  withAppKeyboardCallbackGuard,
+} from '@/shared/keyboard/shortcutGuards';
 import { isProjectDestination } from '@/shared/lib/routes/appNavigation';
 import { useCurrentAppDestination } from '@/shared/hooks/useCurrentAppDestination';
 import { useCurrentKanbanRouteState } from '@/shared/hooks/useCurrentKanbanRouteState';
@@ -104,7 +108,11 @@ export function useIssueShortcuts() {
     []
   );
 
-  const enabled = isKanban;
+  const enabled = useCallback(
+    (event?: KeyboardEvent) =>
+      isKanban && areAppKeyboardShortcutsEnabled(event),
+    [isKanban]
+  );
 
   // Track when a sequence prefix key (i) is pressed so standalone keys
   // like `x` don't fire during a sequence like `i>x`.
@@ -122,67 +130,109 @@ export function useIssueShortcuts() {
     { scopes: [Scope.KANBAN], enabled, keydown: true, keyup: false }
   );
 
-  useHotkeys('i>c', (e) => executeIssueAction(Actions.CreateIssue, e), {
-    ...OPTIONS,
-    enabled,
-  });
+  useHotkeys(
+    'i>c',
+    withAppKeyboardCallbackGuard((e) =>
+      executeIssueAction(Actions.CreateIssue, e)
+    ),
+    {
+      ...OPTIONS,
+      enabled,
+    }
+  );
   useHotkeys(
     'i>s',
-    (e) => {
+    withAppKeyboardCallbackGuard((e) => {
       if (isCreatingIssueRef.current) {
         executeIssueAction(Actions.ChangeNewIssueStatus, e);
       } else {
         executeIssueAction(Actions.ChangeIssueStatus, e);
       }
-    },
+    }),
     { ...OPTIONS, enabled }
   );
   useHotkeys(
     'i>p',
-    (e) => {
+    withAppKeyboardCallbackGuard((e) => {
       if (isCreatingIssueRef.current) {
         executeIssueAction(Actions.ChangeNewIssuePriority, e);
       } else {
         executeIssueAction(Actions.ChangePriority, e);
       }
-    },
+    }),
     { ...OPTIONS, enabled }
   );
   useHotkeys(
     'i>a',
-    (e) => {
+    withAppKeyboardCallbackGuard((e) => {
       if (isCreatingIssueRef.current) {
         executeIssueAction(Actions.ChangeNewIssueAssignees, e);
       } else {
         executeIssueAction(Actions.ChangeAssignees, e);
       }
-    },
+    }),
     { ...OPTIONS, enabled }
   );
-  useHotkeys('i>m', (e) => executeIssueAction(Actions.MakeSubIssueOf, e), {
-    ...OPTIONS,
-    enabled,
-  });
-  useHotkeys('i>b', (e) => executeIssueAction(Actions.AddSubIssue, e), {
-    ...OPTIONS,
-    enabled,
-  });
-  useHotkeys('i>u', (e) => executeIssueAction(Actions.RemoveParentIssue, e), {
-    ...OPTIONS,
-    enabled,
-  });
-  useHotkeys('i>w', (e) => executeIssueAction(Actions.LinkWorkspace, e), {
-    ...OPTIONS,
-    enabled,
-  });
-  useHotkeys('i>d', (e) => executeIssueAction(Actions.DuplicateIssue, e), {
-    ...OPTIONS,
-    enabled,
-  });
-  useHotkeys('i>x', (e) => executeIssueAction(Actions.DeleteIssue, e), {
-    ...OPTIONS,
-    enabled,
-  });
+  useHotkeys(
+    'i>m',
+    withAppKeyboardCallbackGuard((e) =>
+      executeIssueAction(Actions.MakeSubIssueOf, e)
+    ),
+    {
+      ...OPTIONS,
+      enabled,
+    }
+  );
+  useHotkeys(
+    'i>b',
+    withAppKeyboardCallbackGuard((e) =>
+      executeIssueAction(Actions.AddSubIssue, e)
+    ),
+    {
+      ...OPTIONS,
+      enabled,
+    }
+  );
+  useHotkeys(
+    'i>u',
+    withAppKeyboardCallbackGuard((e) =>
+      executeIssueAction(Actions.RemoveParentIssue, e)
+    ),
+    {
+      ...OPTIONS,
+      enabled,
+    }
+  );
+  useHotkeys(
+    'i>w',
+    withAppKeyboardCallbackGuard((e) =>
+      executeIssueAction(Actions.LinkWorkspace, e)
+    ),
+    {
+      ...OPTIONS,
+      enabled,
+    }
+  );
+  useHotkeys(
+    'i>d',
+    withAppKeyboardCallbackGuard((e) =>
+      executeIssueAction(Actions.DuplicateIssue, e)
+    ),
+    {
+      ...OPTIONS,
+      enabled,
+    }
+  );
+  useHotkeys(
+    'i>x',
+    withAppKeyboardCallbackGuard((e) =>
+      executeIssueAction(Actions.DeleteIssue, e)
+    ),
+    {
+      ...OPTIONS,
+      enabled,
+    }
+  );
 
   // Select all visible issues
   useHotkeys(

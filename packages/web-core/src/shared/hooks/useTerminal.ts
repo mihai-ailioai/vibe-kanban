@@ -1,7 +1,6 @@
 import { useContext } from 'react';
 import { createHmrContext } from '@/shared/lib/hmrContext';
-import type { Terminal } from '@xterm/xterm';
-import type { FitAddon } from '@xterm/addon-fit';
+import type { FitAddon, Terminal } from '@/shared/lib/terminalAdapter';
 
 export interface TerminalInstance {
   terminal: Terminal;
