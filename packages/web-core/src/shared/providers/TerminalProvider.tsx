@@ -1,6 +1,5 @@
 import { useReducer, useMemo, useCallback, useRef, ReactNode } from 'react';
-import type { Terminal } from '@xterm/xterm';
-import type { FitAddon } from '@xterm/addon-fit';
+import type { FitAddon, Terminal } from '@/shared/lib/terminalAdapter';
 import {
   TerminalContext,
   type TerminalTab,

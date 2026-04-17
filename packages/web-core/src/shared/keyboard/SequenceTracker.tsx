@@ -1,5 +1,6 @@
 import { useContext, useState, useEffect, useRef, ReactNode } from 'react';
 import { createHmrContext } from '@/shared/lib/hmrContext';
+import { shouldIgnoreAppKeyboardTarget } from '@/shared/keyboard/shortcutGuards';
 import {
   SEQUENCE_FIRST_KEYS,
   sequentialBindings,
@@ -93,12 +94,7 @@ export function SequenceTrackerProvider({
     };
 
     const handleKeyDown = (event: KeyboardEvent) => {
-      const target = event.target as HTMLElement;
-      if (
-        target.tagName === 'INPUT' ||
-        target.tagName === 'TEXTAREA' ||
-        target.isContentEditable
-      ) {
+      if (shouldIgnoreAppKeyboardTarget(event.target)) {
         return;
       }
 

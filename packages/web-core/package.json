@@ -54,9 +54,6 @@
     "@uiw/react-codemirror": "^4.25.1",
     "@vibe/ui": "workspace:*",
     "@virtuoso.dev/message-list": "^1.13.3",
-    "@xterm/addon-fit": "^0.10.0",
-    "@xterm/addon-web-links": "^0.11.0",
-    "@xterm/xterm": "^5.5.0",
     "class-variance-authority": "^0.7.0",
     "click-to-react-component": "^1.1.2",
     "clsx": "^2.0.0",
@@ -64,6 +61,7 @@
     "developer-icons": "^6.0.4",
     "fancy-ansi": "^0.1.3",
     "framer-motion": "^12.23.24",
+    "ghostty-web": "^0.4.0",
     "i18next": "^25.5.2",
     "i18next-browser-languagedetector": "^8.2.0",
     "immer": "^11.1.3",
@@ -98,6 +96,7 @@
   },
   "scripts": {
     "check": "tsc --noEmit",
+    "test": "vitest run",
     "format": "prettier --write \"src/**/*.{ts,tsx,js,jsx,json,css,md}\"",
     "format:check": "prettier --check \"src/**/*.{ts,tsx,js,jsx,json,css,md}\""
   },
@@ -129,6 +128,7 @@
     "prettier": "^3.6.1",
     "tailwindcss": "^3.4.0",
     "typescript": "^5.9.2",
-    "vite": "^7.3.1"
+    "vite": "^7.3.1",
+    "vitest": "^3.2.4"
   }
 }
