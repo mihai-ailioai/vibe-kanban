@@ -4,6 +4,7 @@ use axum::{Json, extract::State, response::Json as ResponseJson};
 use db::models::{
     requests::{
         CreateAndStartWorkspaceRequest, CreateAndStartWorkspaceResponse, CreateWorkspaceApiRequest,
+        LinkedIssueInfo,
     },
     workspace::{CreateWorkspace, Workspace},
 };
@@ -209,6 +210,25 @@ fn rewrite_imported_issue_attachments_markdown(
     rewritten
 }
 
+fn inject_linked_issue_prompt_context(
+    prompt: &str,
+    linked_issue: Option<&LinkedIssueInfo>,
+    organization_id: Option<Uuid>,
+) -> String {
+    let Some(linked_issue) = linked_issue else {
+        return prompt.to_string();
+    };
+
+    let Some(organization_id) = organization_id else {
+        return prompt.to_string();
+    };
+
+    format!(
+        "organization_id: {organization_id}\nproject_id: {}\nissue_id: {}\n\n{prompt}",
+        linked_issue.remote_project_id, linked_issue.issue_id,
+    )
+}
+
 pub async fn create_and_start_workspace(
     State(deployment): State<DeploymentImpl>,
     Json(payload): Json<CreateAndStartWorkspaceRequest>,
@@ -250,9 +270,28 @@ pub async fn create_and_start_workspace(
         managed_workspace.associate_attachments(ids).await?;
     }
 
+    let mut linked_issue_organization_id = None;
+
     if let Some(linked_issue) = &linked_issue
         && let Ok(client) = deployment.remote_client()
     {
+        match client
+            .get_remote_project(linked_issue.remote_project_id)
+            .await
+        {
+            Ok(project) => {
+                linked_issue_organization_id = Some(project.organization_id);
+            }
+            Err(e) => {
+                tracing::warn!(
+                    "Failed to fetch remote project {} for linked issue {}: {}",
+                    linked_issue.remote_project_id,
+                    linked_issue.issue_id,
+                    e
+                );
+            }
+        }
+
         match import_issue_attachments_from_remote(
             &client,
             deployment.file(),
@@ -292,6 +331,12 @@ pub async fn create_and_start_workspace(
         }
     }
 
+    workspace_prompt = inject_linked_issue_prompt_context(
+        &workspace_prompt,
+        linked_issue.as_ref(),
+        linked_issue_organization_id,
+    );
+
     let workspace = managed_workspace.workspace.clone();
     tracing::info!("Created workspace {}", workspace.id);
 
@@ -322,10 +367,20 @@ pub async fn create_and_start_workspace(
 #[cfg(test)]
 mod tests {
     use chrono::Utc;
-    use db::models::file::File;
+    use db::models::{file::File, requests::LinkedIssueInfo};
     use uuid::Uuid;
 
-    use super::{ImportedIssueAttachment, rewrite_imported_issue_attachments_markdown};
+    use super::{
+        ImportedIssueAttachment, inject_linked_issue_prompt_context,
+        rewrite_imported_issue_attachments_markdown,
+    };
+
+    fn linked_issue() -> LinkedIssueInfo {
+        LinkedIssueInfo {
+            remote_project_id: Uuid::parse_str("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb").unwrap(),
+            issue_id: Uuid::parse_str("cccccccc-cccc-cccc-cccc-cccccccccccc").unwrap(),
+        }
+    }
 
     fn imported_file(
         attachment_id: Uuid,
@@ -346,6 +401,46 @@ mod tests {
                 updated_at: Utc::now(),
             },
         }
+    }
+
+    #[test]
+    fn linked_issue_prompt_includes_all_ids_before_original_prompt() {
+        let prompt = "Implement the linked ticket";
+        let organization_id = Uuid::parse_str("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa").unwrap();
+
+        let injected = inject_linked_issue_prompt_context(
+            prompt,
+            Some(&linked_issue()),
+            Some(organization_id),
+        );
+
+        assert_eq!(
+            injected,
+            "organization_id: aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa\nproject_id: bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb\nissue_id: cccccccc-cccc-cccc-cccc-cccccccccccc\n\nImplement the linked ticket"
+        );
+    }
+
+    #[test]
+    fn linked_issue_prompt_without_metadata_leaves_prompt_unchanged() {
+        let prompt = "Implement the linked ticket";
+
+        let injected = inject_linked_issue_prompt_context(prompt, None, None);
+
+        assert_eq!(injected, prompt);
+    }
+
+    #[test]
+    fn linked_issue_prompt_preserves_multiline_prompt_body_after_context_block() {
+        let prompt = "Line one\n\nLine two";
+        let organization_id = Uuid::parse_str("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa").unwrap();
+
+        let injected = inject_linked_issue_prompt_context(
+            prompt,
+            Some(&linked_issue()),
+            Some(organization_id),
+        );
+
+        assert!(injected.ends_with("\n\nLine one\n\nLine two"));
     }
 
     #[test]
