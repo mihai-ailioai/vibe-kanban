@@ -14,7 +14,7 @@ use db::models::{
     pull_request::PullRequest,
     repo::{Repo, RepoError},
     session::{CreateSession, Session},
-    workspace::{CreateWorkspace, Workspace, WorkspaceError},
+    workspace::{CreateWorkspace, Workspace, WorkspaceError, WorkspaceMode},
     workspace_repo::{CreateWorkspaceRepo, WorkspaceRepo},
 };
 use deployment::Deployment;
@@ -718,6 +718,7 @@ pub async fn create_workspace_from_pr(
         pool,
         &CreateWorkspace {
             branch: target_branch_ref.clone(),
+            workspace_mode: WorkspaceMode::GitWorktree,
             name: Some(payload.pr_title.clone()),
         },
         workspace_id,

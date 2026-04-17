@@ -1,11 +1,13 @@
 use chrono::{DateTime, Utc};
 use executors::profile::ExecutorConfig;
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize, de::Error as DeError};
 use sqlx::{FromRow, SqlitePool};
 use strum_macros::{Display, EnumDiscriminants, EnumString};
 use thiserror::Error;
 use ts_rs::TS;
 use uuid::Uuid;
+
+use crate::models::{requests::WorkspaceSourceInput, workspace::WorkspaceMode};
 
 #[derive(Debug, Error)]
 pub enum ScratchError {
@@ -173,11 +175,13 @@ pub struct DraftWorkspaceAttachment {
 }
 
 /// Data for a draft workspace scratch (new workspace creation)
-#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, Serialize, TS)]
 pub struct DraftWorkspaceData {
     pub message: String,
     #[serde(default)]
-    pub repos: Vec<DraftWorkspaceRepo>,
+    pub workspace_mode: WorkspaceMode,
+    #[serde(default)]
+    pub sources: Vec<WorkspaceSourceInput>,
     #[serde(default, alias = "selected_profile", alias = "config")]
     pub executor_config: Option<ExecutorConfig>,
     #[serde(default)]
@@ -191,6 +195,94 @@ pub struct DraftWorkspaceData {
 pub struct DraftWorkspaceRepo {
     pub repo_id: Uuid,
     pub target_branch: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, TS)]
+#[serde(untagged)]
+#[ts(rename = "DraftWorkspaceData")]
+pub enum DraftWorkspaceDataTs {
+    Legacy {
+        message: String,
+        repos: Vec<DraftWorkspaceRepo>,
+        executor_config: Option<ExecutorConfig>,
+        linked_issue: Option<DraftWorkspaceLinkedIssue>,
+        attachments: Vec<DraftWorkspaceAttachment>,
+    },
+    New {
+        message: String,
+        #[ts(optional)]
+        workspace_mode: Option<WorkspaceMode>,
+        #[ts(optional)]
+        sources: Option<Vec<WorkspaceSourceInput>>,
+        executor_config: Option<ExecutorConfig>,
+        linked_issue: Option<DraftWorkspaceLinkedIssue>,
+        attachments: Vec<DraftWorkspaceAttachment>,
+    },
+}
+
+#[derive(Debug, Deserialize)]
+struct DraftWorkspaceDataCompat {
+    pub message: String,
+    #[serde(default)]
+    pub workspace_mode: Option<WorkspaceMode>,
+    #[serde(default)]
+    pub sources: Vec<WorkspaceSourceInput>,
+    #[serde(default)]
+    pub repos: Vec<DraftWorkspaceRepo>,
+    #[serde(default, alias = "selected_profile", alias = "config")]
+    pub executor_config: Option<ExecutorConfig>,
+    #[serde(default)]
+    pub linked_issue: Option<DraftWorkspaceLinkedIssue>,
+    #[serde(default)]
+    pub attachments: Vec<DraftWorkspaceAttachment>,
+}
+
+impl<'de> Deserialize<'de> for DraftWorkspaceData {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let compat = DraftWorkspaceDataCompat::deserialize(deserializer)?;
+        if !compat.sources.is_empty() && !compat.repos.is_empty() {
+            return Err(D::Error::custom(
+                "Draft workspace payload cannot include both `sources` and legacy `repos`.",
+            ));
+        }
+
+        let workspace_mode = compat.workspace_mode.unwrap_or_default();
+        let uses_legacy_repos = !compat.repos.is_empty();
+        let sources = if compat.sources.is_empty() && !compat.repos.is_empty() {
+            if compat.workspace_mode.is_some() && workspace_mode != WorkspaceMode::GitWorktree {
+                return Err(D::Error::custom(
+                    "Legacy `repos` require `workspace_mode` to be `git_worktree`.",
+                ));
+            }
+
+            compat
+                .repos
+                .into_iter()
+                .map(|repo| WorkspaceSourceInput::GitRepo {
+                    repo_id: repo.repo_id,
+                    target_branch: repo.target_branch,
+                })
+                .collect()
+        } else {
+            compat.sources
+        };
+
+        Ok(Self {
+            message: compat.message,
+            workspace_mode: if uses_legacy_repos {
+                WorkspaceMode::GitWorktree
+            } else {
+                workspace_mode
+            },
+            sources,
+            executor_config: compat.executor_config,
+            linked_issue: compat.linked_issue,
+            attachments: compat.attachments,
+        })
+    }
 }
 
 /// Data for project repo defaults scratch (default repos/branches per project)
@@ -277,6 +369,97 @@ pub struct Scratch {
     pub payload: ScratchPayload,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+    use ts_rs::TS;
+    use uuid::Uuid;
+
+    use super::{DraftWorkspaceData, DraftWorkspaceDataTs};
+    use crate::models::{requests::WorkspaceSourceInput, workspace::WorkspaceMode};
+
+    #[test]
+    fn draft_workspace_data_deserializes_legacy_repos_into_sources() {
+        let repo_id = Uuid::new_v4();
+
+        let draft: DraftWorkspaceData = serde_json::from_value(json!({
+            "message": "set up workspace",
+            "repos": [{
+                "repo_id": repo_id,
+                "target_branch": "main"
+            }],
+            "attachments": []
+        }))
+        .unwrap();
+
+        assert_eq!(draft.workspace_mode, WorkspaceMode::GitWorktree);
+        assert_eq!(
+            draft.sources,
+            vec![WorkspaceSourceInput::GitRepo {
+                repo_id,
+                target_branch: "main".to_string(),
+            }]
+        );
+    }
+
+    #[test]
+    fn draft_workspace_data_ts_decl_is_transition_union() {
+        let decl = DraftWorkspaceDataTs::decl();
+
+        assert!(decl.contains("| {"), "{decl}");
+        assert!(decl.contains("repos: Array<DraftWorkspaceRepo>"), "{decl}");
+        assert!(decl.contains("workspace_mode?: WorkspaceMode"), "{decl}");
+        assert!(
+            decl.contains("sources?: Array<WorkspaceSourceInput>"),
+            "{decl}"
+        );
+        assert!(
+            !decl.contains("repos?: Array<DraftWorkspaceRepo>"),
+            "{decl}"
+        );
+    }
+
+    #[test]
+    fn draft_workspace_data_rejects_mixed_sources_and_legacy_repos() {
+        let repo_id = Uuid::new_v4();
+
+        let err = serde_json::from_value::<DraftWorkspaceData>(json!({
+            "message": "set up workspace",
+            "sources": [{
+                "type": "git_repo",
+                "repo_id": repo_id,
+                "target_branch": "main"
+            }],
+            "repos": [{
+                "repo_id": repo_id,
+                "target_branch": "main"
+            }],
+            "attachments": []
+        }))
+        .unwrap_err();
+
+        assert!(err.to_string().contains("sources") && err.to_string().contains("repos"));
+    }
+
+    #[test]
+    fn draft_workspace_data_rejects_legacy_repos_with_incompatible_mode() {
+        let repo_id = Uuid::new_v4();
+
+        let err = serde_json::from_value::<DraftWorkspaceData>(json!({
+            "message": "set up workspace",
+            "workspace_mode": "in_place_directory",
+            "repos": [{
+                "repo_id": repo_id,
+                "target_branch": "main"
+            }],
+            "attachments": []
+        }))
+        .unwrap_err();
+
+        assert!(err.to_string().contains("workspace_mode") && err.to_string().contains("repos"));
+    }
 }
 
 impl Scratch {

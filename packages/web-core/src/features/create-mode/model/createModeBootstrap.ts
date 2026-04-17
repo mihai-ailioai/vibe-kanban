@@ -40,6 +40,33 @@ interface PreferredRepoInput {
   target_branch: string | null;
 }
 
+function getScratchGitRepos(
+  scratchData: DraftWorkspaceData
+): PreferredRepoInput[] {
+  if ('sources' in scratchData) {
+    return (
+      scratchData.sources
+        ?.filter(
+          (source): source is Extract<typeof source, { type: 'git_repo' }> =>
+            source.type === 'git_repo'
+        )
+        .map((source) => ({
+          repo_id: source.repo_id,
+          target_branch: source.target_branch ?? null,
+        })) ?? []
+    );
+  }
+
+  if ('repos' in scratchData) {
+    return scratchData.repos.map((repo) => ({
+      repo_id: repo.repo_id,
+      target_branch: repo.target_branch ?? null,
+    }));
+  }
+
+  return [];
+}
+
 export async function resolveBootstrapRepos(
   preferredRepos: PreferredRepoInput[]
 ): Promise<BootstrapSelectedRepo[]> {
@@ -160,13 +187,10 @@ export async function resolveCreateModeBootstrap({
       data.attachments = scratchData.attachments;
     }
 
-    if (scratchData.repos?.length > 0) {
-      const restoredRepos = await resolveBootstrapRepos(
-        scratchData.repos.map((repo) => ({
-          repo_id: repo.repo_id,
-          target_branch: repo.target_branch ?? null,
-        }))
-      );
+    const scratchGitRepos = getScratchGitRepos(scratchData);
+
+    if (scratchGitRepos?.length > 0) {
+      const restoredRepos = await resolveBootstrapRepos(scratchGitRepos);
 
       if (restoredRepos.length > 0) {
         data.repos = restoredRepos;

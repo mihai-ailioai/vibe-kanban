@@ -14,3 +14,4 @@ pub mod tag;
 pub mod task;
 pub mod workspace;
 pub mod workspace_repo;
+pub mod workspace_source;

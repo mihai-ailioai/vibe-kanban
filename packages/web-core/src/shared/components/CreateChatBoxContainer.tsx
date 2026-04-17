@@ -10,6 +10,7 @@ import { useCreateAttachments } from '@/shared/hooks/useCreateAttachments';
 import { useExecutorConfig } from '@/shared/hooks/useExecutorConfig';
 import { saveProjectRepoDefaults } from '@/shared/hooks/useProjectRepoDefaults';
 import { getSortedExecutorVariantKeys } from '@/shared/lib/executor';
+import { buildCreateWorkspaceRequest } from '@/shared/lib/workspaceCreateState';
 import {
   toPrettyCase,
   splitMessageToTitleDescription,
@@ -226,22 +227,23 @@ export function CreateChatBoxContainer({
     if (!canSubmit || !executorConfig) return;
 
     const { title } = splitMessageToTitleDescription(message);
-    const data = {
-      executor_config: executorConfig,
+    const selectedRepos = repos.map((r) => ({
+      repo_id: r.id,
+      target_branch: targetBranches[r.id]!,
+    }));
+    const data = buildCreateWorkspaceRequest({
       name: title,
       prompt: message,
-      repos: repos.map((r) => ({
-        repo_id: r.id,
-        target_branch: targetBranches[r.id]!,
-      })),
-      linked_issue: linkedIssue
+      executorConfig,
+      repos: selectedRepos,
+      linkedIssue: linkedIssue
         ? {
-            remote_project_id: linkedIssue.remoteProjectId,
-            issue_id: linkedIssue.issueId,
+            remoteProjectId: linkedIssue.remoteProjectId,
+            issueId: linkedIssue.issueId,
           }
         : null,
-      attachment_ids: getAttachmentIds(),
-    };
+      attachmentIds: getAttachmentIds() ?? [],
+    });
     const linkToIssue = linkedIssue
       ? {
           remoteProjectId: linkedIssue.remoteProjectId,
@@ -259,7 +261,7 @@ export function CreateChatBoxContainer({
     }
 
     if (linkedIssue?.remoteProjectId) {
-      saveProjectRepoDefaults(linkedIssue.remoteProjectId, data.repos).catch(
+      saveProjectRepoDefaults(linkedIssue.remoteProjectId, selectedRepos).catch(
         (err) => console.warn('Failed to save project repo defaults:', err)
       );
     }

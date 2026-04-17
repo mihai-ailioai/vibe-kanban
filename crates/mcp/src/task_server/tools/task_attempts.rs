@@ -1,6 +1,9 @@
-use db::models::requests::{
-    CreateAndStartWorkspaceRequest, CreateAndStartWorkspaceResponse, LinkedIssueInfo,
-    WorkspaceRepoInput,
+use db::models::{
+    requests::{
+        CreateAndStartWorkspaceRequest, CreateAndStartWorkspaceResponse, LinkedIssueInfo,
+        WorkspaceSourceInput,
+    },
+    workspace::WorkspaceMode,
 };
 use executors::profile::ExecutorConfig;
 use rmcp::{
@@ -89,6 +92,33 @@ fn build_workspace_prompt_from_issue(issue: &api_types::Issue) -> Option<String>
     Some(format!("{title}\n\n{description}"))
 }
 
+fn build_create_and_start_workspace_payload(
+    name: String,
+    repositories: Vec<McpWorkspaceRepoInput>,
+    linked_issue: Option<LinkedIssueInfo>,
+    executor_config: ExecutorConfig,
+    prompt: String,
+) -> CreateAndStartWorkspaceRequest {
+    let sources = repositories
+        .into_iter()
+        .map(|repository| WorkspaceSourceInput::GitRepo {
+            repo_id: repository.repo_id,
+            target_branch: repository.branch,
+        })
+        .collect();
+
+    CreateAndStartWorkspaceRequest {
+        name: Some(name),
+        workspace_mode: WorkspaceMode::GitWorktree,
+        sources,
+        repos: vec![],
+        linked_issue,
+        executor_config,
+        prompt,
+        attachment_ids: None,
+    }
+}
+
 #[tool_router(router = task_attempts_tools_router, vis = "pub")]
 impl McpServer {
     #[tool(description = "Create a new workspace and start its first session.")]
@@ -140,14 +170,6 @@ impl McpServer {
             }
         });
 
-        let workspace_repos: Vec<WorkspaceRepoInput> = repositories
-            .into_iter()
-            .map(|r| WorkspaceRepoInput {
-                repo_id: r.repo_id,
-                target_branch: r.branch,
-            })
-            .collect();
-
         let (linked_issue, issue_prompt) = if let Some(issue_id) = issue_id {
             let issue_url = self.url(&format!("/api/remote/issues/{issue_id}"));
             let issue: api_types::Issue = match self.send_json(self.client.get(&issue_url)).await {
@@ -176,11 +198,11 @@ impl McpServer {
             }
         };
 
-        let create_and_start_payload = CreateAndStartWorkspaceRequest {
-            name: Some(name.clone()),
-            repos: workspace_repos,
+        let create_and_start_payload = build_create_and_start_workspace_payload(
+            name,
+            repositories,
             linked_issue,
-            executor_config: ExecutorConfig {
+            ExecutorConfig {
                 executor: base_executor,
                 variant,
                 model_id: None,
@@ -188,9 +210,8 @@ impl McpServer {
                 reasoning_id: None,
                 permission_policy: None,
             },
-            prompt: workspace_prompt,
-            attachment_ids: None,
-        };
+            workspace_prompt,
+        );
 
         let create_and_start_url = self.url("/api/workspaces/start");
         let create_and_start_response: CreateAndStartWorkspaceResponse = match self
@@ -240,5 +261,63 @@ impl McpServer {
             workspace_id: workspace_id.to_string(),
             issue_id: issue_id.to_string(),
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use db::models::{
+        requests::{LinkedIssueInfo, WorkspaceSourceInput},
+        workspace::WorkspaceMode,
+    };
+    use executors::{executors::BaseCodingAgent, profile::ExecutorConfig};
+    use uuid::Uuid;
+
+    use super::{McpWorkspaceRepoInput, build_create_and_start_workspace_payload};
+
+    #[test]
+    fn build_create_and_start_workspace_payload_maps_repositories_to_git_sources() {
+        let repo_id = Uuid::new_v4();
+        let remote_project_id = Uuid::new_v4();
+        let issue_id = Uuid::new_v4();
+        let executor_config = ExecutorConfig {
+            executor: BaseCodingAgent::Codex,
+            variant: Some("PLAN".to_string()),
+            model_id: None,
+            agent_id: None,
+            reasoning_id: None,
+            permission_policy: None,
+        };
+
+        let payload = build_create_and_start_workspace_payload(
+            "Workspace name".to_string(),
+            vec![McpWorkspaceRepoInput {
+                repo_id,
+                branch: "main".to_string(),
+            }],
+            Some(LinkedIssueInfo {
+                remote_project_id,
+                issue_id,
+            }),
+            executor_config.clone(),
+            "Implement the issue".to_string(),
+        );
+
+        assert_eq!(payload.name, Some("Workspace name".to_string()));
+        assert_eq!(payload.workspace_mode, WorkspaceMode::GitWorktree);
+        assert_eq!(
+            payload.sources,
+            vec![WorkspaceSourceInput::GitRepo {
+                repo_id,
+                target_branch: "main".to_string(),
+            }]
+        );
+        assert!(payload.repos.is_empty());
+        let linked_issue = payload.linked_issue.as_ref().expect("linked issue");
+        assert_eq!(linked_issue.remote_project_id, remote_project_id);
+        assert_eq!(linked_issue.issue_id, issue_id);
+        assert_eq!(payload.executor_config, executor_config);
+        assert_eq!(payload.prompt, "Implement the issue".to_string());
+        assert_eq!(payload.attachment_ids, None);
     }
 }

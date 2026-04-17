@@ -1,4 +1,4 @@
-import type { ExecutorConfig } from 'shared/types';
+import type { ExecutorConfig, WorkspaceMode } from 'shared/types';
 
 export interface LinkedIssue {
   issueId: string;
@@ -9,6 +9,7 @@ export interface LinkedIssue {
 
 export interface CreateModeInitialState {
   initialPrompt?: string | null;
+  workspaceMode?: WorkspaceMode | null;
   preferredRepos?: Array<{
     repo_id: string;
     target_branch: string | null;

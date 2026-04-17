@@ -29,6 +29,10 @@ import type {
   CreateModeInitialState,
   LinkedIssue,
 } from '@/shared/types/createMode';
+import {
+  DEFAULT_CREATE_MODE_WORKSPACE_MODE,
+  toGitRepoWorkspaceSources,
+} from '@/shared/lib/workspaceCreateState';
 
 // ============================================================================
 // Types
@@ -497,9 +501,12 @@ export function useCreateModeState({
   // ============================================================================
   const { debounced: debouncedSave } = useDebouncedCallback(
     async (data: DraftWorkspaceData) => {
+      const sourceCount = 'sources' in data ? (data.sources?.length ?? 0) : 0;
+      const repoCount = 'repos' in data ? data.repos.length : 0;
       const isEmpty =
         !data.message.trim() &&
-        data.repos.length === 0 &&
+        sourceCount === 0 &&
+        repoCount === 0 &&
         !data.executor_config &&
         data.attachments.length === 0;
 
@@ -521,10 +528,13 @@ export function useCreateModeState({
 
     debouncedSave({
       message: state.message,
-      repos: state.repos.map((r) => ({
-        repo_id: r.repo.id,
-        target_branch: r.targetBranch ?? '',
-      })),
+      workspace_mode: DEFAULT_CREATE_MODE_WORKSPACE_MODE,
+      sources: toGitRepoWorkspaceSources(
+        state.repos.map((r) => ({
+          repo_id: r.repo.id,
+          target_branch: r.targetBranch ?? '',
+        }))
+      ),
       executor_config: state.executorConfig ?? null,
       linked_issue: state.linkedIssue
         ? {
