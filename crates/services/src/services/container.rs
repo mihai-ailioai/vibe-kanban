@@ -19,7 +19,7 @@ use db::{
         },
         repo::Repo,
         session::{CreateSession, Session, SessionError},
-        workspace::{Workspace, WorkspaceError},
+        workspace::{Workspace, WorkspaceError, WorkspaceMode},
         workspace_repo::WorkspaceRepo,
     },
 };
@@ -76,12 +76,20 @@ pub enum ContainerError {
     Session(#[from] SessionError),
     #[error(transparent)]
     ExecutionProcess(#[from] ExecutionProcessError),
+    #[error("Workspace mode `{mode}` is not implemented yet")]
+    UnsupportedWorkspaceMode { mode: WorkspaceMode },
     #[error("Io error: {0}")]
     Io(#[from] std::io::Error),
     #[error("Failed to kill process: {0}")]
     KillFailed(std::io::Error),
     #[error(transparent)]
     Other(#[from] AnyhowError), // Catches any unclassified errors
+}
+
+impl ContainerError {
+    pub fn unsupported_workspace_mode(mode: WorkspaceMode) -> Self {
+        Self::UnsupportedWorkspaceMode { mode }
+    }
 }
 
 #[async_trait]
