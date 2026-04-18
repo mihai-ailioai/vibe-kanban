@@ -241,19 +241,9 @@ async fn release_in_place_git_claims_for_workspace(
 pub async fn cleanup_in_place_git_workspace_root(
     workspace_dir: &Path,
 ) -> Result<(), ContainerError> {
-    let workspace_base_dir = WorkspaceManager::get_workspace_base_dir();
-    if !workspace_dir.starts_with(&workspace_base_dir) {
-        return Err(ContainerError::Other(anyhow!(
-            "Refusing to clean up in-place git workspace outside the workspace base directory: {}",
-            workspace_dir.display()
-        )));
-    }
-
-    if workspace_dir.exists() {
-        tokio::fs::remove_dir_all(workspace_dir).await?;
-    }
-
-    Ok(())
+    WorkspaceManager::cleanup_workspace_root_in_base_dir(workspace_dir)
+        .await
+        .map_err(LocalContainerService::map_workspace_manager_error)
 }
 
 async fn provision_workspace_for_mode(
@@ -678,12 +668,15 @@ impl LocalContainerService {
 
         let _ = release_in_place_git_claims_for_workspace(&self.db, workspace).await;
 
-        if workspace.workspace_mode == WorkspaceMode::InPlaceGit {
+        if matches!(
+            workspace.workspace_mode,
+            WorkspaceMode::InPlaceGit | WorkspaceMode::InPlaceDirectory
+        ) {
             cleanup_in_place_git_workspace_root(&workspace_dir)
                 .await
                 .unwrap_or_else(|e| {
                     tracing::warn!(
-                        "Failed to clean up in-place git workspace for workspace {}: {}",
+                        "Failed to clean up in-place workspace for workspace {}: {}",
                         workspace.id,
                         e
                     );

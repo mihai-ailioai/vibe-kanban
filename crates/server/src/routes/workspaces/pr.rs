@@ -36,6 +36,7 @@ use utils::response::ApiResponse;
 use uuid::Uuid;
 use workspace_manager::WorkspaceManager;
 
+use super::capabilities::require_pull_requests;
 use crate::{DeploymentImpl, error::ApiError};
 
 #[derive(Debug, Deserialize, Serialize, TS)]
@@ -190,6 +191,8 @@ pub async fn create_pr(
     State(deployment): State<DeploymentImpl>,
     Json(request): Json<CreatePrApiRequest>,
 ) -> Result<ResponseJson<ApiResponse<String, PrError>>, ApiError> {
+    require_pull_requests(&workspace)?;
+
     let pool = &deployment.db().pool;
 
     let workspace_repo =
@@ -392,6 +395,8 @@ pub async fn attach_existing_pr(
     State(deployment): State<DeploymentImpl>,
     Json(request): Json<AttachExistingPrRequest>,
 ) -> Result<ResponseJson<ApiResponse<AttachPrResponse, PrError>>, ApiError> {
+    require_pull_requests(&workspace)?;
+
     let pool = &deployment.db().pool;
 
     let workspace_repo =
@@ -545,6 +550,8 @@ pub async fn get_pr_comments(
     State(deployment): State<DeploymentImpl>,
     Query(query): Query<GetPrCommentsQuery>,
 ) -> Result<ResponseJson<ApiResponse<PrCommentsResponse, GetPrCommentsError>>, ApiError> {
+    require_pull_requests(&workspace)?;
+
     let pool = &deployment.db().pool;
 
     // Look up the specific repo using the multi-repo pattern
@@ -849,4 +856,89 @@ pub fn router() -> Router<DeploymentImpl> {
         .route("/", post(create_pr))
         .route("/attach", post(attach_existing_pr))
         .route("/comments", get(get_pr_comments))
+}
+
+#[cfg(test)]
+mod tests {
+    use axum::{Router, http::StatusCode};
+    use db::models::workspace::{CreateWorkspace, Workspace, WorkspaceMode};
+    use deployment::Deployment;
+    use tokio::net::TcpListener;
+    use tokio_util::sync::CancellationToken;
+    use utils::response::ApiResponse;
+    use uuid::Uuid;
+
+    use crate::DeploymentImpl;
+
+    async fn start_app() -> (DeploymentImpl, String, tokio::task::JoinHandle<()>) {
+        let deployment = <DeploymentImpl as Deployment>::new(CancellationToken::new())
+            .await
+            .unwrap();
+
+        let app = Router::new()
+            .nest("/api", super::super::router(&deployment))
+            .with_state(deployment.clone());
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+
+        (deployment, format!("http://{address}"), server)
+    }
+
+    async fn create_workspace(
+        deployment: &DeploymentImpl,
+        workspace_mode: WorkspaceMode,
+    ) -> Workspace {
+        Workspace::create(
+            &deployment.db().pool,
+            &CreateWorkspace {
+                branch: format!("pr-route-test-{}", Uuid::new_v4()),
+                workspace_mode,
+                name: Some("PR route capability test".to_string()),
+            },
+            Uuid::new_v4(),
+        )
+        .await
+        .unwrap()
+    }
+
+    #[tokio::test]
+    async fn create_pr_rejects_in_place_directory_mode() {
+        let (deployment, base_url, server) = start_app().await;
+        let workspace = create_workspace(&deployment, WorkspaceMode::InPlaceDirectory).await;
+
+        let response = reqwest::Client::new()
+            .post(format!(
+                "{base_url}/api/workspaces/{}/pull-requests",
+                workspace.id
+            ))
+            .json(&super::CreatePrApiRequest {
+                title: "Test PR".to_string(),
+                body: None,
+                target_branch: None,
+                draft: None,
+                repo_id: Uuid::new_v4(),
+                auto_generate_description: false,
+            })
+            .send()
+            .await
+            .unwrap();
+
+        let status = response.status();
+        let body = response.text().await.unwrap();
+
+        server.abort();
+        let _ = server.await;
+        let _ = Workspace::delete(&deployment.db().pool, workspace.id).await;
+
+        assert_eq!(status, StatusCode::BAD_REQUEST, "body: {body}");
+        let payload: ApiResponse<serde_json::Value> = serde_json::from_str(&body).unwrap();
+        assert!(!payload.is_success());
+        let message = payload.message().unwrap();
+        assert!(message.contains("in_place_directory"));
+        assert!(message.contains("pull request"));
+    }
 }

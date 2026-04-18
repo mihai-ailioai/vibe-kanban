@@ -11,7 +11,10 @@ use std::{
 
 use db::{
     DBService,
-    models::{workspace::Workspace, workspace_repo::WorkspaceRepo},
+    models::{
+        workspace::{Workspace, WorkspaceMode},
+        workspace_repo::WorkspaceRepo,
+    },
 };
 use executors::logs::utils::ConversationPatch;
 use futures::StreamExt;
@@ -45,6 +48,10 @@ pub async fn compute_diff_stats(
     git: &GitService,
     workspace: &Workspace,
 ) -> Option<DiffStats> {
+    if !workspace_supports_git_read(workspace) {
+        return None;
+    }
+
     let container_ref = workspace.container_ref.as_ref()?;
 
     let workspace_repos =
@@ -89,6 +96,59 @@ pub async fn compute_diff_stats(
     }
 
     Some(stats)
+}
+
+fn workspace_supports_git_read(workspace: &Workspace) -> bool {
+    !matches!(workspace.workspace_mode, WorkspaceMode::InPlaceDirectory)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{fs, path::PathBuf};
+
+    use db::{
+        DBService,
+        models::workspace::{CreateWorkspace, Workspace, WorkspaceMode},
+    };
+    use uuid::Uuid;
+
+    use super::*;
+
+    fn temp_workspace_root(prefix: &str) -> PathBuf {
+        std::env::temp_dir().join(format!("{prefix}-{}", Uuid::new_v4()))
+    }
+
+    #[tokio::test]
+    async fn compute_diff_stats_returns_none_for_in_place_directory_workspaces() {
+        let db = DBService::new().await.unwrap();
+        let workspace_id = Uuid::new_v4();
+        let workspace = Workspace::create(
+            &db.pool,
+            &CreateWorkspace {
+                branch: format!("diff-stats-test-{workspace_id}"),
+                workspace_mode: WorkspaceMode::InPlaceDirectory,
+                name: Some("Diff stats non-git test".to_string()),
+            },
+            workspace_id,
+        )
+        .await
+        .unwrap();
+        let workspace_root = temp_workspace_root("diff-stats-non-git");
+        fs::create_dir_all(&workspace_root).unwrap();
+        Workspace::update_container_ref(&db.pool, workspace.id, &workspace_root.to_string_lossy())
+            .await
+            .unwrap();
+        let workspace = Workspace::find_by_id(&db.pool, workspace.id)
+            .await
+            .unwrap()
+            .unwrap();
+
+        let stats = compute_diff_stats(&db.pool, &GitService::new(), &workspace).await;
+
+        let _ = fs::remove_dir_all(&workspace_root);
+
+        assert!(stats.is_none());
+    }
 }
 
 /// Maximum cumulative diff bytes to stream before omitting content (200MB)

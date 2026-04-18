@@ -23,7 +23,10 @@ use ts_rs::TS;
 use utils::response::ApiResponse;
 use uuid::Uuid;
 
-use super::streams::{DiffStreamQuery, stream_workspace_diff_ws};
+use super::{
+    capabilities::{require_git_read, require_git_write},
+    streams::{DiffStreamQuery, stream_workspace_diff_ws},
+};
 use crate::{DeploymentImpl, error::ApiError, middleware::signed_ws::SignedWsUpgrade};
 
 #[derive(Debug, Deserialize, Serialize, TS)]
@@ -171,7 +174,7 @@ pub async fn stream_diff_ws(
     query: axum::extract::Query<DiffStreamQuery>,
     workspace: Extension<Workspace>,
     deployment: State<DeploymentImpl>,
-) -> impl IntoResponse {
+) -> Result<impl IntoResponse, ApiError> {
     stream_workspace_diff_ws(ws, query, workspace, deployment).await
 }
 
@@ -181,6 +184,8 @@ pub async fn merge_workspace(
     State(deployment): State<DeploymentImpl>,
     Json(request): Json<MergeWorkspaceRequest>,
 ) -> Result<ResponseJson<ApiResponse<()>>, ApiError> {
+    require_git_write(&workspace)?;
+
     let pool = &deployment.db().pool;
 
     let workspace_repo =
@@ -270,6 +275,8 @@ pub async fn push_workspace_branch(
     State(deployment): State<DeploymentImpl>,
     Json(request): Json<PushWorkspaceRequest>,
 ) -> Result<ResponseJson<ApiResponse<(), PushError>>, ApiError> {
+    require_git_write(&workspace)?;
+
     let pool = &deployment.db().pool;
 
     let workspace_repo =
@@ -324,6 +331,8 @@ pub async fn force_push_workspace_branch(
     State(deployment): State<DeploymentImpl>,
     Json(request): Json<PushWorkspaceRequest>,
 ) -> Result<ResponseJson<ApiResponse<(), PushError>>, ApiError> {
+    require_git_write(&workspace)?;
+
     let pool = &deployment.db().pool;
 
     let workspace_repo =
@@ -364,6 +373,8 @@ pub async fn get_workspace_branch_status(
     Extension(workspace): Extension<Workspace>,
     State(deployment): State<DeploymentImpl>,
 ) -> Result<ResponseJson<ApiResponse<Vec<RepoBranchStatus>>>, ApiError> {
+    require_git_read(&workspace)?;
+
     let pool = &deployment.db().pool;
 
     let repositories = WorkspaceRepo::find_repos_for_workspace(pool, workspace.id).await?;
@@ -507,6 +518,8 @@ pub async fn change_target_branch(
     State(deployment): State<DeploymentImpl>,
     Json(payload): Json<ChangeTargetBranchRequest>,
 ) -> Result<ResponseJson<ApiResponse<ChangeTargetBranchResponse>>, ApiError> {
+    require_git_write(&workspace)?;
+
     let repo_id = payload.repo_id;
     let new_target_branch = payload.new_target_branch;
     let pool = &deployment.db().pool;
@@ -560,6 +573,8 @@ pub async fn rename_branch(
     State(deployment): State<DeploymentImpl>,
     Json(payload): Json<RenameBranchRequest>,
 ) -> Result<ResponseJson<ApiResponse<RenameBranchResponse, RenameBranchError>>, ApiError> {
+    require_git_write(&workspace)?;
+
     let new_branch_name = payload.new_branch_name.trim();
 
     if new_branch_name.is_empty() {
@@ -697,6 +712,8 @@ pub async fn rebase_workspace(
     State(deployment): State<DeploymentImpl>,
     Json(payload): Json<RebaseWorkspaceRequest>,
 ) -> Result<ResponseJson<ApiResponse<(), GitOperationError>>, ApiError> {
+    require_git_write(&workspace)?;
+
     let pool = &deployment.db().pool;
 
     let workspace_repo =
@@ -797,6 +814,8 @@ pub async fn abort_workspace_conflicts(
     State(deployment): State<DeploymentImpl>,
     Json(payload): Json<AbortConflictsRequest>,
 ) -> Result<ResponseJson<ApiResponse<()>>, ApiError> {
+    require_git_write(&workspace)?;
+
     let pool = &deployment.db().pool;
 
     let repo = Repo::find_by_id(pool, payload.repo_id)
@@ -821,6 +840,8 @@ pub async fn continue_workspace_rebase(
     State(deployment): State<DeploymentImpl>,
     Json(payload): Json<ContinueRebaseRequest>,
 ) -> Result<ResponseJson<ApiResponse<()>>, ApiError> {
+    require_git_write(&workspace)?;
+
     let pool = &deployment.db().pool;
 
     let repo = Repo::find_by_id(pool, payload.repo_id)
@@ -837,4 +858,78 @@ pub async fn continue_workspace_rebase(
     deployment.git().continue_rebase(&worktree_path)?;
 
     Ok(ResponseJson(ApiResponse::success(())))
+}
+
+#[cfg(test)]
+mod tests {
+    use axum::{Router, http::StatusCode};
+    use db::models::workspace::{CreateWorkspace, Workspace, WorkspaceMode};
+    use deployment::Deployment;
+    use tokio::net::TcpListener;
+    use tokio_util::sync::CancellationToken;
+    use utils::response::ApiResponse;
+    use uuid::Uuid;
+
+    use crate::DeploymentImpl;
+
+    async fn start_app() -> (DeploymentImpl, String, tokio::task::JoinHandle<()>) {
+        let deployment = <DeploymentImpl as Deployment>::new(CancellationToken::new())
+            .await
+            .unwrap();
+
+        let app = Router::new()
+            .nest("/api", super::super::router(&deployment))
+            .with_state(deployment.clone());
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+
+        (deployment, format!("http://{address}"), server)
+    }
+
+    async fn create_workspace(
+        deployment: &DeploymentImpl,
+        workspace_mode: WorkspaceMode,
+    ) -> Workspace {
+        Workspace::create(
+            &deployment.db().pool,
+            &CreateWorkspace {
+                branch: format!("git-route-test-{}", Uuid::new_v4()),
+                workspace_mode,
+                name: Some("Git route capability test".to_string()),
+            },
+            Uuid::new_v4(),
+        )
+        .await
+        .unwrap()
+    }
+
+    #[tokio::test]
+    async fn get_workspace_branch_status_rejects_in_place_directory_mode() {
+        let (deployment, base_url, server) = start_app().await;
+        let workspace = create_workspace(&deployment, WorkspaceMode::InPlaceDirectory).await;
+
+        let response = reqwest::get(format!(
+            "{base_url}/api/workspaces/{}/git/status",
+            workspace.id
+        ))
+        .await
+        .unwrap();
+
+        let status = response.status();
+        let payload: ApiResponse<serde_json::Value> = response.json().await.unwrap();
+
+        server.abort();
+        let _ = server.await;
+        let _ = Workspace::delete(&deployment.db().pool, workspace.id).await;
+
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert!(!payload.is_success());
+        let message = payload.message().unwrap();
+        assert!(message.contains("in_place_directory"));
+        assert!(message.contains("git"));
+    }
 }

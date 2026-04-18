@@ -158,6 +158,8 @@ export type Workspace = { id: string, task_id: string | null, container_ref: str
 
 export type WorkspaceWithStatus = { is_running: boolean, is_errored: boolean, id: string, task_id: string | null, container_ref: string | null, branch: string, workspace_mode: WorkspaceMode, setup_completed_at: string | null, created_at: string, updated_at: string, archived: boolean, pinned: boolean, name: string | null, worktree_deleted: boolean, };
 
+export type WorkspaceCapabilities = { supports_git_read: boolean, supports_git_write: boolean, supports_pull_requests: boolean, supports_repo_attach: boolean, supports_delete_branches: boolean, };
+
 export type WorkspaceSourceKind = "git_repo" | "directory";
 
 export type WorkspaceSource = { id: string, workspace_id: string, source_type: WorkspaceSourceKind, repo_id: string | null, path: string | null, display_name: string | null, target_branch: string | null, position: bigint, created_at: string, updated_at: string, };

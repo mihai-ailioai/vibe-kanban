@@ -46,6 +46,7 @@ fn generate_types_content() -> String {
         db::models::workspace::WorkspaceMode::decl(),
         db::models::workspace::Workspace::decl(),
         db::models::workspace::WorkspaceWithStatus::decl(),
+        server::routes::workspaces::capabilities::WorkspaceCapabilities::decl(),
         db::models::workspace_source::WorkspaceSourceKind::decl(),
         db::models::workspace_source::WorkspaceSource::decl(),
         db::models::session::Session::decl(),
