@@ -46,7 +46,7 @@ pub async fn add_workspace_repo(
     State(deployment): State<DeploymentImpl>,
     Json(payload): Json<AddWorkspaceRepoRequest>,
 ) -> Result<ResponseJson<ApiResponse<AddWorkspaceRepoResponse>>, ApiError> {
-    require_repo_attach(&workspace)?;
+    require_repo_attach(&workspace).map_err(ApiError::BadRequest)?;
 
     let mut managed_workspace = deployment
         .workspace_manager()

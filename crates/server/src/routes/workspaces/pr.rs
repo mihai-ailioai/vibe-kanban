@@ -191,7 +191,7 @@ pub async fn create_pr(
     State(deployment): State<DeploymentImpl>,
     Json(request): Json<CreatePrApiRequest>,
 ) -> Result<ResponseJson<ApiResponse<String, PrError>>, ApiError> {
-    require_pull_requests(&workspace)?;
+    require_pull_requests(&workspace).map_err(ApiError::BadRequest)?;
 
     let pool = &deployment.db().pool;
 
@@ -395,7 +395,7 @@ pub async fn attach_existing_pr(
     State(deployment): State<DeploymentImpl>,
     Json(request): Json<AttachExistingPrRequest>,
 ) -> Result<ResponseJson<ApiResponse<AttachPrResponse, PrError>>, ApiError> {
-    require_pull_requests(&workspace)?;
+    require_pull_requests(&workspace).map_err(ApiError::BadRequest)?;
 
     let pool = &deployment.db().pool;
 
@@ -550,7 +550,7 @@ pub async fn get_pr_comments(
     State(deployment): State<DeploymentImpl>,
     Query(query): Query<GetPrCommentsQuery>,
 ) -> Result<ResponseJson<ApiResponse<PrCommentsResponse, GetPrCommentsError>>, ApiError> {
-    require_pull_requests(&workspace)?;
+    require_pull_requests(&workspace).map_err(ApiError::BadRequest)?;
 
     let pool = &deployment.db().pool;
 

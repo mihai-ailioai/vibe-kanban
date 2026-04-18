@@ -5,7 +5,11 @@ use thiserror::Error;
 use ts_rs::TS;
 use uuid::Uuid;
 
-use super::workspace_repo::WorkspaceRepo;
+use super::{
+    workspace::{Workspace, WorkspaceMode},
+    workspace_repo::WorkspaceRepo,
+    workspace_source::{WorkspaceSource, directory_workspace_entry_name},
+};
 
 #[derive(Debug, Error)]
 pub enum SessionError {
@@ -177,17 +181,31 @@ impl Session {
         workspace_id: Uuid,
     ) -> Result<Option<String>, sqlx::Error> {
         let repos = WorkspaceRepo::find_repos_for_workspace(pool, workspace_id).await?;
-        if repos.len() != 1 {
+        if repos.len() == 1 {
+            let repo = &repos[0];
+            let path = match repo.default_working_dir.as_deref() {
+                Some(subdir) if !subdir.is_empty() => {
+                    std::path::PathBuf::from(&repo.name).join(subdir)
+                }
+                _ => std::path::PathBuf::from(&repo.name),
+            };
+
+            return Ok(Some(path.to_string_lossy().to_string()));
+        }
+
+        let Some(workspace) = Workspace::find_by_id(pool, workspace_id).await? else {
+            return Ok(None);
+        };
+        if workspace.workspace_mode != WorkspaceMode::InPlaceDirectory {
             return Ok(None);
         }
 
-        let repo = &repos[0];
-        let path = match repo.default_working_dir.as_deref() {
-            Some(subdir) if !subdir.is_empty() => std::path::PathBuf::from(&repo.name).join(subdir),
-            _ => std::path::PathBuf::from(&repo.name),
+        let sources = WorkspaceSource::find_by_workspace_id(pool, workspace_id).await?;
+        let [source] = sources.as_slice() else {
+            return Ok(None);
         };
 
-        Ok(Some(path.to_string_lossy().to_string()))
+        Ok(directory_source_entry_name(source))
     }
 
     pub async fn update(
@@ -225,5 +243,177 @@ impl Session {
         .execute(pool)
         .await?;
         Ok(())
+    }
+}
+
+fn directory_source_entry_name(source: &WorkspaceSource) -> Option<String> {
+    source.path.as_deref().and_then(|path| {
+        let raw_path = std::path::Path::new(path);
+        let effective_path = raw_path
+            .canonicalize()
+            .unwrap_or_else(|_| raw_path.to_path_buf());
+
+        directory_workspace_entry_name(source.display_name.as_deref(), &effective_path)
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{fs, str::FromStr};
+
+    use sqlx::{ConnectOptions, SqlitePool, sqlite::SqliteConnectOptions};
+    use tokio::runtime::Builder;
+    use uuid::Uuid;
+
+    use super::{CreateSession, Session};
+    use crate::models::{
+        workspace::{CreateWorkspace, Workspace, WorkspaceMode},
+        workspace_source::{CreateWorkspaceSource, WorkspaceSource},
+    };
+
+    async fn test_pool() -> SqlitePool {
+        let db_path =
+            std::env::temp_dir().join(format!("db-session-tests-{}.sqlite", Uuid::new_v4()));
+        let database_url = format!("sqlite://{}", db_path.to_string_lossy());
+
+        let options = SqliteConnectOptions::from_str(&database_url)
+            .unwrap()
+            .create_if_missing(true)
+            .disable_statement_logging();
+
+        let pool = SqlitePool::connect_with(options).await.unwrap();
+        sqlx::query("PRAGMA foreign_keys = ON")
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::migrate!("./migrations").run(&pool).await.unwrap();
+        pool
+    }
+
+    fn run_async_test<F>(future: F)
+    where
+        F: std::future::Future<Output = ()>,
+    {
+        Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap()
+            .block_on(future);
+    }
+
+    #[test]
+    fn create_sets_agent_working_dir_for_single_directory_workspace_source() {
+        run_async_test(async {
+            let pool = test_pool().await;
+            let workspace_id = Uuid::new_v4();
+
+            Workspace::create(
+                &pool,
+                &CreateWorkspace {
+                    branch: format!("branch-{workspace_id}"),
+                    workspace_mode: WorkspaceMode::InPlaceDirectory,
+                    name: Some("Directory workspace".to_string()),
+                },
+                workspace_id,
+            )
+            .await
+            .unwrap();
+
+            WorkspaceSource::create_many(
+                &pool,
+                workspace_id,
+                &[CreateWorkspaceSource::Directory {
+                    path: "/tmp/non-git-project".to_string(),
+                    display_name: Some("non-git-project".to_string()),
+                }],
+            )
+            .await
+            .unwrap();
+
+            let session = Session::create(
+                &pool,
+                &CreateSession {
+                    executor: Some("CODEX".to_string()),
+                    name: None,
+                },
+                Uuid::new_v4(),
+                workspace_id,
+            )
+            .await
+            .unwrap();
+
+            assert_eq!(
+                session.agent_working_dir.as_deref(),
+                Some("non-git-project")
+            );
+        });
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn create_sets_agent_working_dir_for_directory_source_without_display_name_from_canonical_symlink_target()
+     {
+        run_async_test(async {
+            let pool = test_pool().await;
+            let workspace_id = Uuid::new_v4();
+            let current_dir = std::env::current_dir().unwrap();
+            let source_dir = current_dir
+                .join("target")
+                .join(format!("db-session-real-dir-{}", Uuid::new_v4()));
+            fs::create_dir_all(&source_dir).unwrap();
+            let linked_dir = current_dir
+                .join("target")
+                .join(format!("db-session-linked-dir-{}", Uuid::new_v4()));
+            std::os::unix::fs::symlink(&source_dir, &linked_dir).unwrap();
+
+            let persisted_path = linked_dir
+                .strip_prefix(&current_dir)
+                .unwrap()
+                .to_string_lossy()
+                .to_string();
+
+            Workspace::create(
+                &pool,
+                &CreateWorkspace {
+                    branch: format!("branch-{workspace_id}"),
+                    workspace_mode: WorkspaceMode::InPlaceDirectory,
+                    name: Some("Directory workspace".to_string()),
+                },
+                workspace_id,
+            )
+            .await
+            .unwrap();
+
+            WorkspaceSource::create_many(
+                &pool,
+                workspace_id,
+                &[CreateWorkspaceSource::Directory {
+                    path: persisted_path,
+                    display_name: None,
+                }],
+            )
+            .await
+            .unwrap();
+
+            let session = Session::create(
+                &pool,
+                &CreateSession {
+                    executor: Some("CODEX".to_string()),
+                    name: None,
+                },
+                Uuid::new_v4(),
+                workspace_id,
+            )
+            .await
+            .unwrap();
+
+            assert_eq!(
+                session.agent_working_dir.as_deref(),
+                source_dir.file_name().and_then(|name| name.to_str())
+            );
+
+            let _ = fs::remove_file(&linked_dir);
+            let _ = fs::remove_dir_all(&source_dir);
+        });
     }
 }

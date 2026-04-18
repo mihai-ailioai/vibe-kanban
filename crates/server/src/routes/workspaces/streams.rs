@@ -45,7 +45,7 @@ pub async fn stream_workspace_diff_ws(
     Extension(workspace): Extension<db::models::workspace::Workspace>,
     State(deployment): State<DeploymentImpl>,
 ) -> Result<impl IntoResponse, ApiError> {
-    require_git_read(&workspace)?;
+    require_git_read(&workspace).map_err(ApiError::BadRequest)?;
 
     let _ = deployment.container().touch(&workspace).await;
     let stats_only = params.stats_only;

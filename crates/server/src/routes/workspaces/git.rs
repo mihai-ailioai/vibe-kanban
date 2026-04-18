@@ -184,7 +184,7 @@ pub async fn merge_workspace(
     State(deployment): State<DeploymentImpl>,
     Json(request): Json<MergeWorkspaceRequest>,
 ) -> Result<ResponseJson<ApiResponse<()>>, ApiError> {
-    require_git_write(&workspace)?;
+    require_git_write(&workspace).map_err(ApiError::BadRequest)?;
 
     let pool = &deployment.db().pool;
 
@@ -275,7 +275,7 @@ pub async fn push_workspace_branch(
     State(deployment): State<DeploymentImpl>,
     Json(request): Json<PushWorkspaceRequest>,
 ) -> Result<ResponseJson<ApiResponse<(), PushError>>, ApiError> {
-    require_git_write(&workspace)?;
+    require_git_write(&workspace).map_err(ApiError::BadRequest)?;
 
     let pool = &deployment.db().pool;
 
@@ -331,7 +331,7 @@ pub async fn force_push_workspace_branch(
     State(deployment): State<DeploymentImpl>,
     Json(request): Json<PushWorkspaceRequest>,
 ) -> Result<ResponseJson<ApiResponse<(), PushError>>, ApiError> {
-    require_git_write(&workspace)?;
+    require_git_write(&workspace).map_err(ApiError::BadRequest)?;
 
     let pool = &deployment.db().pool;
 
@@ -373,7 +373,7 @@ pub async fn get_workspace_branch_status(
     Extension(workspace): Extension<Workspace>,
     State(deployment): State<DeploymentImpl>,
 ) -> Result<ResponseJson<ApiResponse<Vec<RepoBranchStatus>>>, ApiError> {
-    require_git_read(&workspace)?;
+    require_git_read(&workspace).map_err(ApiError::BadRequest)?;
 
     let pool = &deployment.db().pool;
 
@@ -518,7 +518,7 @@ pub async fn change_target_branch(
     State(deployment): State<DeploymentImpl>,
     Json(payload): Json<ChangeTargetBranchRequest>,
 ) -> Result<ResponseJson<ApiResponse<ChangeTargetBranchResponse>>, ApiError> {
-    require_git_write(&workspace)?;
+    require_git_write(&workspace).map_err(ApiError::BadRequest)?;
 
     let repo_id = payload.repo_id;
     let new_target_branch = payload.new_target_branch;
@@ -573,7 +573,7 @@ pub async fn rename_branch(
     State(deployment): State<DeploymentImpl>,
     Json(payload): Json<RenameBranchRequest>,
 ) -> Result<ResponseJson<ApiResponse<RenameBranchResponse, RenameBranchError>>, ApiError> {
-    require_git_write(&workspace)?;
+    require_git_write(&workspace).map_err(ApiError::BadRequest)?;
 
     let new_branch_name = payload.new_branch_name.trim();
 
@@ -712,7 +712,7 @@ pub async fn rebase_workspace(
     State(deployment): State<DeploymentImpl>,
     Json(payload): Json<RebaseWorkspaceRequest>,
 ) -> Result<ResponseJson<ApiResponse<(), GitOperationError>>, ApiError> {
-    require_git_write(&workspace)?;
+    require_git_write(&workspace).map_err(ApiError::BadRequest)?;
 
     let pool = &deployment.db().pool;
 
@@ -814,7 +814,7 @@ pub async fn abort_workspace_conflicts(
     State(deployment): State<DeploymentImpl>,
     Json(payload): Json<AbortConflictsRequest>,
 ) -> Result<ResponseJson<ApiResponse<()>>, ApiError> {
-    require_git_write(&workspace)?;
+    require_git_write(&workspace).map_err(ApiError::BadRequest)?;
 
     let pool = &deployment.db().pool;
 
@@ -840,7 +840,7 @@ pub async fn continue_workspace_rebase(
     State(deployment): State<DeploymentImpl>,
     Json(payload): Json<ContinueRebaseRequest>,
 ) -> Result<ResponseJson<ApiResponse<()>>, ApiError> {
-    require_git_write(&workspace)?;
+    require_git_write(&workspace).map_err(ApiError::BadRequest)?;
 
     let pool = &deployment.db().pool;
 

@@ -1,3 +1,5 @@
+use std::path::Path;
+
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use sqlx::{FromRow, SqlitePool, Type};
@@ -43,6 +45,34 @@ pub struct WorkspaceSource {
     pub position: i64,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
+}
+
+pub fn directory_workspace_entry_name(
+    display_name: Option<&str>,
+    source_path: &Path,
+) -> Option<String> {
+    display_name
+        .filter(|name| !name.trim().is_empty())
+        .map(str::to_string)
+        .or_else(|| {
+            source_path
+                .file_name()
+                .map(|name| name.to_string_lossy().to_string())
+        })
+}
+
+pub fn validate_directory_workspace_entry_name(entry_name: &str) -> Result<(), &'static str> {
+    let trimmed = entry_name.trim();
+    if trimmed.is_empty()
+        || trimmed == "."
+        || trimmed == ".."
+        || trimmed.contains('/')
+        || trimmed.contains('\\')
+    {
+        return Err("must be a single path component");
+    }
+
+    Ok(())
 }
 
 impl WorkspaceSource {

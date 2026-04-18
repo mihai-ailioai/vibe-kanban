@@ -9,12 +9,14 @@ use db::models::{
     },
     workspace::{CreateWorkspace, Workspace, WorkspaceMode},
     workspace_repo::WorkspaceRepo,
-    workspace_source::{CreateWorkspaceSource, WorkspaceSource},
+    workspace_source::{
+        CreateWorkspaceSource, WorkspaceSource, validate_directory_workspace_entry_name,
+    },
 };
 use deployment::Deployment;
 use executors::profile::ExecutorConfig;
 use git::GitService;
-use local_deployment::container::cleanup_in_place_git_workspace_root;
+use local_deployment::container::cleanup_in_place_workspace_root;
 use services::services::container::ContainerService;
 use sqlx::SqlitePool;
 use utils::response::ApiResponse;
@@ -28,6 +30,8 @@ use crate::{
         ImportedIssueAttachment, import_issue_attachments_from_remote,
     },
 };
+
+type WorkspaceRequestValidationResult<T> = Result<T, String>;
 
 pub(crate) async fn create_workspace_record(
     deployment: &DeploymentImpl,
@@ -95,7 +99,7 @@ struct NormalizedWorkspaceSources {
 
 fn git_source_to_workspace_repo(
     source: &WorkspaceSourceInput,
-) -> Result<WorkspaceRepoInput, ApiError> {
+) -> WorkspaceRequestValidationResult<WorkspaceRepoInput> {
     match source {
         WorkspaceSourceInput::GitRepo {
             repo_id,
@@ -104,26 +108,26 @@ fn git_source_to_workspace_repo(
             repo_id: *repo_id,
             target_branch: target_branch.clone(),
         }),
-        WorkspaceSourceInput::Directory { .. } => Err(ApiError::BadRequest(
+        WorkspaceSourceInput::Directory { .. } => Err(
             "Workspace modes `git_worktree` and `in_place_git` only support `git_repo` sources."
                 .to_string(),
-        )),
+        ),
     }
 }
 
 fn validate_sources_for_mode(
     workspace_mode: WorkspaceMode,
     sources: &[WorkspaceSourceInput],
-) -> Result<(), ApiError> {
+) -> WorkspaceRequestValidationResult<()> {
     match workspace_mode {
         WorkspaceMode::GitWorktree => {
             if sources
                 .iter()
                 .any(|source| !matches!(source, WorkspaceSourceInput::GitRepo { .. }))
             {
-                return Err(ApiError::BadRequest(
+                return Err(
                     "Workspace mode `git_worktree` only supports `git_repo` sources.".to_string(),
-                ));
+                );
             }
         }
         WorkspaceMode::InPlaceGit => {
@@ -131,9 +135,9 @@ fn validate_sources_for_mode(
                 .iter()
                 .any(|source| !matches!(source, WorkspaceSourceInput::GitRepo { .. }))
             {
-                return Err(ApiError::BadRequest(
+                return Err(
                     "Workspace mode `in_place_git` only supports `git_repo` sources.".to_string(),
-                ));
+                );
             }
         }
         WorkspaceMode::InPlaceDirectory => {
@@ -141,10 +145,32 @@ fn validate_sources_for_mode(
                 .iter()
                 .any(|source| !matches!(source, WorkspaceSourceInput::Directory { .. }))
             {
-                return Err(ApiError::BadRequest(
+                return Err(
                     "Workspace mode `in_place_directory` only supports `directory` sources and does not support `git_repo` sources."
                         .to_string(),
-                ));
+                );
+            }
+
+            if sources.len() != 1 {
+                return Err(
+                    "Workspace mode `in_place_directory` requires exactly one `directory` source."
+                        .to_string(),
+                );
+            }
+
+            for source in sources {
+                let WorkspaceSourceInput::Directory { display_name, .. } = source else {
+                    continue;
+                };
+
+                if let Some(display_name) = display_name.as_deref()
+                    && validate_directory_workspace_entry_name(display_name).is_err()
+                {
+                    return Err(
+                        "Workspace mode `in_place_directory` requires `display_name` to be a single path component when provided."
+                            .to_string(),
+                    );
+                }
             }
         }
     }
@@ -156,18 +182,16 @@ fn normalize_workspace_sources(
     workspace_mode: WorkspaceMode,
     sources: Vec<WorkspaceSourceInput>,
     repos: Vec<WorkspaceRepoInput>,
-) -> Result<NormalizedWorkspaceSources, ApiError> {
+) -> WorkspaceRequestValidationResult<NormalizedWorkspaceSources> {
     if !sources.is_empty() && !repos.is_empty() {
-        return Err(ApiError::BadRequest(
-            "Provide either `sources` or legacy `repos`, not both.".to_string(),
-        ));
+        return Err("Provide either `sources` or legacy `repos`, not both.".to_string());
     }
 
     if sources.is_empty() && !repos.is_empty() && workspace_mode != WorkspaceMode::GitWorktree {
-        return Err(ApiError::BadRequest(
+        return Err(
             "Legacy `repos` input is only supported with workspace mode `git_worktree`."
                 .to_string(),
-        ));
+        );
     }
 
     let (workspace_mode, sources) = if sources.is_empty() && !repos.is_empty() {
@@ -186,9 +210,7 @@ fn normalize_workspace_sources(
     };
 
     if sources.is_empty() {
-        return Err(ApiError::BadRequest(
-            "At least one workspace source is required.".to_string(),
-        ));
+        return Err("At least one workspace source is required.".to_string());
     }
 
     validate_sources_for_mode(workspace_mode, &sources)?;
@@ -211,7 +233,7 @@ fn normalize_workspace_sources(
 #[cfg(test)]
 fn normalize_workspace_request(
     request: CreateAndStartWorkspaceRequest,
-) -> Result<NormalizedWorkspaceSources, ApiError> {
+) -> WorkspaceRequestValidationResult<NormalizedWorkspaceSources> {
     normalize_workspace_sources(request.workspace_mode, request.sources, request.repos)
 }
 
@@ -437,10 +459,12 @@ async fn cleanup_failed_create_and_start_workspace(pool: &SqlitePool, workspace_
     if let Some(workspace_dir) = workspace_dir {
         tokio::spawn(async move {
             let cleanup_result = match workspace.workspace_mode {
-                WorkspaceMode::InPlaceGit => cleanup_in_place_git_workspace_root(&workspace_dir)
-                    .await
-                    .map_err(|e| e.to_string()),
-                WorkspaceMode::GitWorktree | WorkspaceMode::InPlaceDirectory => {
+                WorkspaceMode::InPlaceGit | WorkspaceMode::InPlaceDirectory => {
+                    cleanup_in_place_workspace_root(&workspace_dir)
+                        .await
+                        .map_err(|e| e.to_string())
+                }
+                WorkspaceMode::GitWorktree => {
                     WorkspaceManager::cleanup_workspace(&workspace_dir, &repositories)
                         .await
                         .map_err(|e| e.to_string())
@@ -491,7 +515,8 @@ where
         ..
     } = payload;
 
-    let normalized_request = normalize_workspace_sources(workspace_mode, sources, repos)?;
+    let normalized_request = normalize_workspace_sources(workspace_mode, sources, repos)
+        .map_err(ApiError::BadRequest)?;
     let workspace_mode = normalized_request.workspace_mode;
     let sources = normalized_request.sources;
     let repos = normalized_request.legacy_git_repos;
@@ -593,7 +618,7 @@ pub async fn create_and_start_workspace(
     State(deployment): State<DeploymentImpl>,
     Json(payload): Json<CreateAndStartWorkspaceRequest>,
 ) -> Result<ResponseJson<ApiResponse<CreateAndStartWorkspaceResponse>>, ApiError> {
-    let analytics_executor = payload.executor_config.executor.clone();
+    let analytics_executor = payload.executor_config.executor;
     let analytics_variant = payload.executor_config.variant.clone();
 
     let mut prepared = prepare_create_and_start_workspace(
@@ -725,7 +750,7 @@ mod tests {
             workspace::{CreateWorkspace, Workspace, WorkspaceMode},
             workspace_repo::WorkspaceRepo,
             workspace_repo_claim::{CreateWorkspaceRepoClaim, WorkspaceRepoClaim},
-            workspace_source::{WorkspaceSource, WorkspaceSourceKind},
+            workspace_source::{CreateWorkspaceSource, WorkspaceSource, WorkspaceSourceKind},
         },
     };
     use executors::{executors::BaseCodingAgent, profile::ExecutorConfig};
@@ -919,6 +944,70 @@ mod tests {
             assert!(real_repo_dir.join("README.md").exists());
 
             let _ = tokio::fs::remove_dir_all(&real_repo_dir).await;
+        });
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn cleanup_failed_create_and_start_workspace_uses_in_place_directory_root_cleanup() {
+        run_async_test(async {
+            let pool = test_pool().await;
+            let workspace_id = Uuid::new_v4();
+            let workspace = Workspace::create(
+                &pool,
+                &CreateWorkspace {
+                    branch: format!("directory-cleanup-root-{workspace_id}"),
+                    workspace_mode: WorkspaceMode::InPlaceDirectory,
+                    name: Some("Directory cleanup root workspace".to_string()),
+                },
+                workspace_id,
+            )
+            .await
+            .unwrap();
+
+            let real_directory = std::env::temp_dir()
+                .join(format!("create-route-real-directory-{}", Uuid::new_v4()));
+            fs::create_dir_all(&real_directory).unwrap();
+            fs::write(real_directory.join("README.md"), "directory\n").unwrap();
+
+            let workspace_root = workspace_manager::WorkspaceManager::get_workspace_base_dir()
+                .join(format!(
+                    "create-route-directory-cleanup-root-{}",
+                    Uuid::new_v4()
+                ));
+            fs::create_dir_all(&workspace_root).unwrap();
+            std::os::unix::fs::symlink(&real_directory, workspace_root.join("non-git-project"))
+                .unwrap();
+
+            Workspace::update_container_ref(&pool, workspace.id, &workspace_root.to_string_lossy())
+                .await
+                .unwrap();
+            WorkspaceSource::create_many(
+                &pool,
+                workspace.id,
+                &[CreateWorkspaceSource::Directory {
+                    path: real_directory.to_string_lossy().to_string(),
+                    display_name: Some("non-git-project".to_string()),
+                }],
+            )
+            .await
+            .unwrap();
+
+            super::cleanup_failed_create_and_start_workspace(&pool, workspace.id).await;
+            assert_workspace_state_deleted(&pool, workspace.id).await;
+
+            for _ in 0..20 {
+                if !workspace_root.exists() {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+            }
+
+            assert!(!workspace_root.exists());
+            assert!(real_directory.exists());
+            assert!(real_directory.join("README.md").exists());
+
+            let _ = tokio::fs::remove_dir_all(&real_directory).await;
         });
     }
 
@@ -1147,11 +1236,7 @@ mod tests {
 
         let err = normalize_workspace_request(request).unwrap_err();
 
-        assert!(matches!(
-            err,
-            ApiError::BadRequest(message)
-                if message.contains("sources") && message.contains("repos")
-        ));
+        assert!(err.contains("sources") && err.contains("repos"));
     }
 
     #[test]
@@ -1166,11 +1251,50 @@ mod tests {
         )
         .unwrap_err();
 
-        assert!(matches!(
-            err,
-            ApiError::BadRequest(message)
-                if message.contains("in_place_directory") && message.contains("git_repo")
-        ));
+        assert!(err.contains("in_place_directory") && err.contains("git_repo"));
+    }
+
+    #[test]
+    fn normalize_workspace_sources_rejects_multiple_directory_sources_for_in_place_directory() {
+        let err = normalize_workspace_sources(
+            WorkspaceMode::InPlaceDirectory,
+            vec![
+                WorkspaceSourceInput::Directory {
+                    path: "/tmp/project-a".to_string(),
+                    display_name: Some("project-a".to_string()),
+                },
+                WorkspaceSourceInput::Directory {
+                    path: "/tmp/project-b".to_string(),
+                    display_name: Some("project-b".to_string()),
+                },
+            ],
+            vec![],
+        )
+        .unwrap_err();
+
+        assert!(
+            err.contains("in_place_directory")
+                && err.contains("exactly one")
+                && err.contains("directory")
+        );
+    }
+
+    #[test]
+    fn normalize_workspace_sources_rejects_invalid_directory_display_names_for_in_place_directory()
+    {
+        for invalid_display_name in ["", "   ", ".", "..", "nested/name", r"nested\\name"] {
+            let err = normalize_workspace_sources(
+                WorkspaceMode::InPlaceDirectory,
+                vec![WorkspaceSourceInput::Directory {
+                    path: "/tmp/project-a".to_string(),
+                    display_name: Some(invalid_display_name.to_string()),
+                }],
+                vec![],
+            )
+            .unwrap_err();
+
+            assert!(err.contains("display_name") && err.contains("single path component"));
+        }
     }
 
     #[test]
@@ -1185,11 +1309,7 @@ mod tests {
         )
         .unwrap_err();
 
-        assert!(matches!(
-            err,
-            ApiError::BadRequest(message)
-                if message.contains("in_place_git") && message.contains("git_repo")
-        ));
+        assert!(err.contains("in_place_git") && err.contains("git_repo"));
     }
 
     #[test]
@@ -1242,11 +1362,7 @@ mod tests {
 
         let err = normalize_workspace_request(request).unwrap_err();
 
-        assert!(matches!(
-            err,
-            ApiError::BadRequest(message)
-                if message.contains("git_worktree") && message.contains("git_repo")
-        ));
+        assert!(err.contains("git_worktree") && err.contains("git_repo"));
     }
 
     #[test]
@@ -1294,11 +1410,7 @@ mod tests {
         )
         .unwrap_err();
 
-        assert!(matches!(
-            err,
-            ApiError::BadRequest(message)
-                if message.contains("repos") && message.contains("git_worktree")
-        ));
+        assert!(err.contains("repos") && err.contains("git_worktree"));
     }
 
     #[test]
@@ -1498,6 +1610,93 @@ mod tests {
             .await
             .unwrap();
             assert!(attached_repos.is_empty());
+        });
+    }
+
+    #[test]
+    fn prepare_create_and_start_workspace_rejects_multiple_directory_sources() {
+        run_async_test(async {
+            let pool = test_pool().await;
+            let db = DBService { pool: pool.clone() };
+            let workspace_manager = WorkspaceManager::new(db.clone());
+            let git = GitService::new();
+
+            let err = prepare_create_and_start_workspace(
+                &pool,
+                &workspace_manager,
+                &git,
+                CreateAndStartWorkspaceRequest {
+                    name: Some("Directory workspace".to_string()),
+                    workspace_mode: WorkspaceMode::InPlaceDirectory,
+                    sources: vec![
+                        WorkspaceSourceInput::Directory {
+                            path: "/tmp/project-a".to_string(),
+                            display_name: Some("project-a".to_string()),
+                        },
+                        WorkspaceSourceInput::Directory {
+                            path: "/tmp/project-b".to_string(),
+                            display_name: Some("project-b".to_string()),
+                        },
+                    ],
+                    repos: vec![],
+                    linked_issue: None,
+                    executor_config: ExecutorConfig::new(BaseCodingAgent::Codex),
+                    prompt: "Create the workspace".to_string(),
+                    attachment_ids: None,
+                },
+                |_name, _mode| async { unreachable!("validation should fail before create") },
+            )
+            .await;
+
+            let err = match err {
+                Ok(_) => panic!("expected validation to fail before workspace creation"),
+                Err(err) => err,
+            };
+
+            assert!(matches!(err, ApiError::BadRequest(_)));
+        });
+    }
+
+    #[test]
+    fn prepare_create_and_start_workspace_rejects_invalid_directory_display_name_before_create() {
+        run_async_test(async {
+            let pool = test_pool().await;
+            let db = DBService { pool: pool.clone() };
+            let workspace_manager = WorkspaceManager::new(db.clone());
+            let git = GitService::new();
+
+            let err = prepare_create_and_start_workspace(
+                &pool,
+                &workspace_manager,
+                &git,
+                CreateAndStartWorkspaceRequest {
+                    name: Some("Directory workspace".to_string()),
+                    workspace_mode: WorkspaceMode::InPlaceDirectory,
+                    sources: vec![WorkspaceSourceInput::Directory {
+                        path: "/tmp/project-a".to_string(),
+                        display_name: Some("nested/name".to_string()),
+                    }],
+                    repos: vec![],
+                    linked_issue: None,
+                    executor_config: ExecutorConfig::new(BaseCodingAgent::Codex),
+                    prompt: "Create the workspace".to_string(),
+                    attachment_ids: None,
+                },
+                |_name, _mode| async { unreachable!("validation should fail before create") },
+            )
+            .await;
+
+            let err = match err {
+                Ok(_) => panic!("expected validation to fail before workspace creation"),
+                Err(err) => err,
+            };
+
+            assert!(matches!(
+                err,
+                ApiError::BadRequest(message)
+                    if message.contains("display_name")
+                        && message.contains("single path component")
+            ));
         });
     }
 

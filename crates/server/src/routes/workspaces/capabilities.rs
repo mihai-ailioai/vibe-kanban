@@ -6,6 +6,8 @@ use utils::response::ApiResponse;
 
 use crate::error::ApiError;
 
+type WorkspaceCapabilityResult = Result<(), String>;
+
 #[derive(Debug, Clone, Serialize, Deserialize, TS, PartialEq, Eq)]
 pub struct WorkspaceCapabilities {
     pub supports_git_read: bool,
@@ -47,7 +49,7 @@ pub fn workspace_capabilities(workspace: &Workspace) -> WorkspaceCapabilities {
     WorkspaceCapabilities::for_mode(workspace.workspace_mode)
 }
 
-pub fn require_git_read(workspace: &Workspace) -> Result<(), ApiError> {
+pub fn require_git_read(workspace: &Workspace) -> WorkspaceCapabilityResult {
     require_capability(
         workspace,
         workspace_capabilities(workspace).supports_git_read,
@@ -55,7 +57,7 @@ pub fn require_git_read(workspace: &Workspace) -> Result<(), ApiError> {
     )
 }
 
-pub fn require_git_write(workspace: &Workspace) -> Result<(), ApiError> {
+pub fn require_git_write(workspace: &Workspace) -> WorkspaceCapabilityResult {
     require_capability(
         workspace,
         workspace_capabilities(workspace).supports_git_write,
@@ -63,7 +65,7 @@ pub fn require_git_write(workspace: &Workspace) -> Result<(), ApiError> {
     )
 }
 
-pub fn require_pull_requests(workspace: &Workspace) -> Result<(), ApiError> {
+pub fn require_pull_requests(workspace: &Workspace) -> WorkspaceCapabilityResult {
     require_capability(
         workspace,
         workspace_capabilities(workspace).supports_pull_requests,
@@ -71,7 +73,7 @@ pub fn require_pull_requests(workspace: &Workspace) -> Result<(), ApiError> {
     )
 }
 
-pub fn require_repo_attach(workspace: &Workspace) -> Result<(), ApiError> {
+pub fn require_repo_attach(workspace: &Workspace) -> WorkspaceCapabilityResult {
     require_capability(
         workspace,
         workspace_capabilities(workspace).supports_repo_attach,
@@ -83,14 +85,14 @@ fn require_capability(
     workspace: &Workspace,
     is_supported: bool,
     operation: &str,
-) -> Result<(), ApiError> {
+) -> WorkspaceCapabilityResult {
     if is_supported {
         Ok(())
     } else {
-        Err(ApiError::BadRequest(format!(
+        Err(format!(
             "Workspace mode `{}` does not support {}.",
             workspace.workspace_mode, operation
-        )))
+        ))
     }
 }
 
@@ -114,7 +116,7 @@ mod tests {
     use uuid::Uuid;
 
     use super::*;
-    use crate::{DeploymentImpl, error::ApiError};
+    use crate::DeploymentImpl;
 
     fn sample_workspace(workspace_mode: WorkspaceMode) -> Workspace {
         Workspace {
@@ -181,30 +183,19 @@ mod tests {
         assert!(require_pull_requests(&in_place_git).is_ok());
 
         let err = require_repo_attach(&in_place_git).unwrap_err();
-        assert!(matches!(
-            err,
-            ApiError::BadRequest(message)
-                if message.contains("in_place_git")
-                    && message.contains("repository attach")
-        ));
+        assert!(err.contains("in_place_git") && err.contains("repository attach"));
 
         let in_place_directory = sample_workspace(WorkspaceMode::InPlaceDirectory);
-        assert!(matches!(
-            require_git_read(&in_place_directory),
-            Err(ApiError::BadRequest(message))
-                if message.contains("in_place_directory") && message.contains("git read")
-        ));
-        assert!(matches!(
-            require_git_write(&in_place_directory),
-            Err(ApiError::BadRequest(message))
-                if message.contains("in_place_directory") && message.contains("git write")
-        ));
-        assert!(matches!(
-            require_pull_requests(&in_place_directory),
-            Err(ApiError::BadRequest(message))
-                if message.contains("in_place_directory")
-                    && message.contains("pull request")
-        ));
+        let git_read_err = require_git_read(&in_place_directory).unwrap_err();
+        assert!(git_read_err.contains("in_place_directory") && git_read_err.contains("git read"));
+
+        let git_write_err = require_git_write(&in_place_directory).unwrap_err();
+        assert!(
+            git_write_err.contains("in_place_directory") && git_write_err.contains("git write")
+        );
+
+        let pr_err = require_pull_requests(&in_place_directory).unwrap_err();
+        assert!(pr_err.contains("in_place_directory") && pr_err.contains("pull request"));
     }
 
     #[tokio::test]

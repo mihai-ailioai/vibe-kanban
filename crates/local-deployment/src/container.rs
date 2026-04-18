@@ -24,7 +24,10 @@ use db::{
         workspace::{Workspace, WorkspaceMode},
         workspace_repo::{CreateWorkspaceRepo, WorkspaceRepo},
         workspace_repo_claim::{CreateWorkspaceRepoClaim, WorkspaceRepoClaim},
-        workspace_source::{WorkspaceSource, WorkspaceSourceKind},
+        workspace_source::{
+            WorkspaceSource, WorkspaceSourceKind, directory_workspace_entry_name,
+            validate_directory_workspace_entry_name,
+        },
     },
 };
 use deployment::DeploymentError;
@@ -96,14 +99,15 @@ struct WorkspaceProvisioningContext {
     workspace_inputs: Vec<RepoWorkspaceInput>,
 }
 
+struct DirectoryWorkspaceInput {
+    source_path: PathBuf,
+    entry_name: String,
+}
+
 #[derive(Clone, Copy)]
 enum WorkspaceProvisioningAction {
     Create,
     EnsureExists,
-}
-
-fn unsupported_workspace_mode_error(mode: WorkspaceMode) -> ContainerError {
-    ContainerError::unsupported_workspace_mode(mode)
 }
 
 fn create_workspace_repo_records(
@@ -145,14 +149,14 @@ fn create_dir_symlink(source: &Path, target: &Path) -> Result<(), ContainerError
     Ok(())
 }
 
-fn ensure_repo_entry_symlink(
-    source_repo_path: &Path,
+fn ensure_workspace_entry_symlink(
+    source_path: &Path,
     entry_path: &Path,
 ) -> Result<(), ContainerError> {
     match std::fs::symlink_metadata(entry_path) {
         Ok(metadata) if metadata.file_type().is_symlink() => {
             let current_target = std::fs::read_link(entry_path)?;
-            if current_target == source_repo_path {
+            if current_target == source_path {
                 return Ok(());
             }
 
@@ -168,7 +172,7 @@ fn ensure_repo_entry_symlink(
         Err(err) => return Err(ContainerError::Io(err)),
     }
 
-    create_dir_symlink(source_repo_path, entry_path)
+    create_dir_symlink(source_path, entry_path)
 }
 
 fn ensure_workspace_root_symlinks(
@@ -179,10 +183,74 @@ fn ensure_workspace_root_symlinks(
 
     for input in workspace_inputs {
         let entry_path = workspace_repo_entry_path(workspace_dir, &input.repo.name);
-        ensure_repo_entry_symlink(&input.repo.path, &entry_path)?;
+        ensure_workspace_entry_symlink(&input.repo.path, &entry_path)?;
     }
 
     Ok(())
+}
+
+fn validate_workspace_entry_name(entry_name: &str) -> Result<(), ContainerError> {
+    if validate_directory_workspace_entry_name(entry_name).is_err() {
+        return Err(ContainerError::Other(anyhow!(
+            "Directory workspace entry name '{}' must be a single path component",
+            entry_name
+        )));
+    }
+
+    Ok(())
+}
+
+fn validate_in_place_directory_workspace_source(
+    sources: &[WorkspaceSourceInput],
+) -> Result<DirectoryWorkspaceInput, ContainerError> {
+    let [WorkspaceSourceInput::Directory { path, display_name }] = sources else {
+        return Err(ContainerError::Other(anyhow!(
+            "Workspace mode `in_place_directory` requires exactly one `directory` source"
+        )));
+    };
+
+    let source_path = PathBuf::from(path);
+    if !source_path.exists() {
+        return Err(ContainerError::Other(anyhow!(
+            "Directory workspace source {} does not exist",
+            source_path.display()
+        )));
+    }
+    if !source_path.is_dir() {
+        return Err(ContainerError::Other(anyhow!(
+            "Directory workspace source {} must be a directory",
+            source_path.display()
+        )));
+    }
+    let source_path = source_path.canonicalize()?;
+
+    if let Some(display_name) = display_name.as_deref() {
+        validate_workspace_entry_name(display_name)?;
+    }
+
+    let entry_name = directory_workspace_entry_name(display_name.as_deref(), &source_path)
+        .ok_or_else(|| {
+            ContainerError::Other(anyhow!(
+                "Directory workspace source {} must have a usable name",
+                source_path.display()
+            ))
+        })?;
+
+    validate_workspace_entry_name(&entry_name)?;
+
+    Ok(DirectoryWorkspaceInput {
+        source_path,
+        entry_name,
+    })
+}
+
+fn ensure_single_directory_workspace_root(
+    workspace_dir: &Path,
+    input: &DirectoryWorkspaceInput,
+) -> Result<(), ContainerError> {
+    std::fs::create_dir_all(workspace_dir)?;
+    let entry_path = workspace_dir.join(&input.entry_name);
+    ensure_workspace_entry_symlink(&input.source_path, &entry_path)
 }
 
 fn validate_in_place_git_workspace_inputs(
@@ -238,9 +306,7 @@ async fn release_in_place_git_claims_for_workspace(
     Ok(())
 }
 
-pub async fn cleanup_in_place_git_workspace_root(
-    workspace_dir: &Path,
-) -> Result<(), ContainerError> {
+pub async fn cleanup_in_place_workspace_root(workspace_dir: &Path) -> Result<(), ContainerError> {
     WorkspaceManager::cleanup_workspace_root_in_base_dir(workspace_dir)
         .await
         .map_err(LocalContainerService::map_workspace_manager_error)
@@ -324,9 +390,10 @@ async fn provision_workspace_for_mode(
                 )));
             }
 
-            Err(unsupported_workspace_mode_error(
-                WorkspaceMode::InPlaceDirectory,
-            ))
+            let input = validate_in_place_directory_workspace_source(sources)?;
+            ensure_single_directory_workspace_root(workspace_dir, &input)?;
+
+            Ok(workspace_dir.to_path_buf())
         }
     }
 }
@@ -672,7 +739,7 @@ impl LocalContainerService {
             workspace.workspace_mode,
             WorkspaceMode::InPlaceGit | WorkspaceMode::InPlaceDirectory
         ) {
-            cleanup_in_place_git_workspace_root(&workspace_dir)
+            cleanup_in_place_workspace_root(&workspace_dir)
                 .await
                 .unwrap_or_else(|e| {
                     tracing::warn!(
@@ -2136,7 +2203,11 @@ fn success_exit_status() -> std::process::ExitStatus {
 
 #[cfg(test)]
 mod tests {
-    use std::{fs, path::Path, str::FromStr};
+    use std::{
+        fs,
+        path::{Path, PathBuf},
+        str::FromStr,
+    };
 
     use db::{
         DBService,
@@ -2156,7 +2227,7 @@ mod tests {
 
     use super::{
         ContainerError, Repo, RepoWorkspaceInput, WorkspaceProvisioningAction,
-        cleanup_in_place_git_workspace_root, provision_workspace_for_mode,
+        cleanup_in_place_workspace_root, provision_workspace_for_mode,
         release_in_place_git_claims_for_workspace, resolve_provisioning_sources,
     };
 
@@ -2275,29 +2346,249 @@ mod tests {
         });
     }
 
+    #[cfg(unix)]
     #[test]
-    fn provision_workspace_for_mode_rejects_in_place_directory_as_not_implemented() {
+    fn provision_workspace_for_mode_creates_in_place_directory_workspace_root() {
         run_async_test(async {
-            let err = provision_workspace_for_mode(
-                WorkspaceProvisioningAction::EnsureExists,
+            let source_dir = std::env::temp_dir().join(format!(
+                "local-deployment-directory-source-{}",
+                Uuid::new_v4()
+            ));
+            fs::create_dir_all(&source_dir).unwrap();
+            fs::write(source_dir.join("README.md"), "hello\n").unwrap();
+
+            let workspace_dir = std::env::temp_dir().join(format!(
+                "local-deployment-directory-workspace-{}",
+                Uuid::new_v4()
+            ));
+
+            let provisioned_path = provision_workspace_for_mode(
+                WorkspaceProvisioningAction::Create,
                 WorkspaceMode::InPlaceDirectory,
                 &[WorkspaceSourceInput::Directory {
-                    path: "/tmp/non-git-project".to_string(),
+                    path: source_dir.to_string_lossy().to_string(),
                     display_name: Some("non-git-project".to_string()),
+                }],
+                &workspace_dir,
+                &[],
+                "unused-branch",
+            )
+            .await
+            .unwrap();
+
+            assert_eq!(provisioned_path, workspace_dir);
+            let entry = workspace_dir.join("non-git-project");
+            assert!(entry.exists());
+            assert_eq!(
+                fs::read_link(&entry).unwrap(),
+                source_dir.canonicalize().unwrap()
+            );
+
+            let _ = tokio::fs::remove_dir_all(&workspace_dir).await;
+            let _ = tokio::fs::remove_dir_all(&source_dir).await;
+        });
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn provision_workspace_for_mode_canonicalizes_relative_in_place_directory_source() {
+        run_async_test(async {
+            let relative_source = PathBuf::from(format!(
+                "target/local-deployment-relative-directory-source-{}",
+                Uuid::new_v4()
+            ));
+            fs::create_dir_all(&relative_source).unwrap();
+            let canonical_source = relative_source.canonicalize().unwrap();
+
+            let workspace_dir = std::env::temp_dir().join(format!(
+                "local-deployment-relative-directory-workspace-{}",
+                Uuid::new_v4()
+            ));
+
+            let provisioned_path = provision_workspace_for_mode(
+                WorkspaceProvisioningAction::Create,
+                WorkspaceMode::InPlaceDirectory,
+                &[WorkspaceSourceInput::Directory {
+                    path: relative_source.to_string_lossy().to_string(),
+                    display_name: Some("relative-project".to_string()),
+                }],
+                &workspace_dir,
+                &[],
+                "unused-branch",
+            )
+            .await
+            .unwrap();
+
+            assert_eq!(provisioned_path, workspace_dir);
+            let entry = workspace_dir.join("relative-project");
+            assert_eq!(fs::read_link(&entry).unwrap(), canonical_source);
+
+            let _ = tokio::fs::remove_dir_all(&workspace_dir).await;
+            let _ = tokio::fs::remove_dir_all(&relative_source).await;
+        });
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn provision_workspace_for_mode_ensures_in_place_directory_workspace_root_exists() {
+        run_async_test(async {
+            let source_dir = std::env::temp_dir().join(format!(
+                "local-deployment-directory-ensure-source-{}",
+                Uuid::new_v4()
+            ));
+            fs::create_dir_all(&source_dir).unwrap();
+
+            let workspace_dir = std::env::temp_dir().join(format!(
+                "local-deployment-directory-ensure-workspace-{}",
+                Uuid::new_v4()
+            ));
+            let sources = vec![WorkspaceSourceInput::Directory {
+                path: source_dir.to_string_lossy().to_string(),
+                display_name: Some("non-git-project".to_string()),
+            }];
+
+            provision_workspace_for_mode(
+                WorkspaceProvisioningAction::Create,
+                WorkspaceMode::InPlaceDirectory,
+                &sources,
+                &workspace_dir,
+                &[],
+                "unused-branch",
+            )
+            .await
+            .unwrap();
+
+            fs::remove_dir_all(&workspace_dir).unwrap();
+
+            let ensured_path = provision_workspace_for_mode(
+                WorkspaceProvisioningAction::EnsureExists,
+                WorkspaceMode::InPlaceDirectory,
+                &sources,
+                &workspace_dir,
+                &[],
+                "unused-branch",
+            )
+            .await
+            .unwrap();
+
+            assert_eq!(ensured_path, workspace_dir);
+            let entry = workspace_dir.join("non-git-project");
+            assert!(entry.exists());
+            assert_eq!(
+                fs::read_link(&entry).unwrap(),
+                source_dir.canonicalize().unwrap()
+            );
+
+            let _ = tokio::fs::remove_dir_all(&workspace_dir).await;
+            let _ = tokio::fs::remove_dir_all(&source_dir).await;
+        });
+    }
+
+    #[test]
+    fn provision_workspace_for_mode_rejects_missing_directory_source() {
+        run_async_test(async {
+            let err = provision_workspace_for_mode(
+                WorkspaceProvisioningAction::Create,
+                WorkspaceMode::InPlaceDirectory,
+                &[WorkspaceSourceInput::Directory {
+                    path: "/tmp/definitely-missing-directory-workspace".to_string(),
+                    display_name: Some("missing".to_string()),
                 }],
                 Path::new("/tmp/unused"),
                 &[],
-                "workspace-branch",
+                "unused-branch",
             )
             .await
             .unwrap_err();
 
-            assert!(matches!(
-                err,
-                ContainerError::UnsupportedWorkspaceMode {
-                    mode: WorkspaceMode::InPlaceDirectory,
-                }
+            assert!(err.to_string().contains("does not exist"));
+        });
+    }
+
+    #[test]
+    fn provision_workspace_for_mode_rejects_file_source_for_in_place_directory() {
+        run_async_test(async {
+            let source_file = std::env::temp_dir().join(format!(
+                "local-deployment-directory-file-{}",
+                Uuid::new_v4()
             ));
+            fs::write(&source_file, "not a directory\n").unwrap();
+
+            let err = provision_workspace_for_mode(
+                WorkspaceProvisioningAction::Create,
+                WorkspaceMode::InPlaceDirectory,
+                &[WorkspaceSourceInput::Directory {
+                    path: source_file.to_string_lossy().to_string(),
+                    display_name: Some("file-source".to_string()),
+                }],
+                Path::new("/tmp/unused"),
+                &[],
+                "unused-branch",
+            )
+            .await
+            .unwrap_err();
+
+            assert!(err.to_string().contains("must be a directory"));
+
+            let _ = tokio::fs::remove_file(&source_file).await;
+        });
+    }
+
+    #[test]
+    fn provision_workspace_for_mode_rejects_invalid_in_place_directory_entry_name() {
+        run_async_test(async {
+            let source_dir = std::env::temp_dir().join(format!(
+                "local-deployment-invalid-directory-name-source-{}",
+                Uuid::new_v4()
+            ));
+            fs::create_dir_all(&source_dir).unwrap();
+
+            let err = provision_workspace_for_mode(
+                WorkspaceProvisioningAction::Create,
+                WorkspaceMode::InPlaceDirectory,
+                &[WorkspaceSourceInput::Directory {
+                    path: source_dir.to_string_lossy().to_string(),
+                    display_name: Some("nested/name".to_string()),
+                }],
+                Path::new("/tmp/unused"),
+                &[],
+                "unused-branch",
+            )
+            .await
+            .unwrap_err();
+
+            assert!(err.to_string().contains("single path component"));
+
+            let _ = tokio::fs::remove_dir_all(&source_dir).await;
+        });
+    }
+
+    #[test]
+    fn provision_workspace_for_mode_rejects_blank_display_name_for_in_place_directory() {
+        run_async_test(async {
+            let source_dir = std::env::temp_dir().join(format!(
+                "local-deployment-blank-directory-name-source-{}",
+                Uuid::new_v4()
+            ));
+            fs::create_dir_all(&source_dir).unwrap();
+
+            let err = provision_workspace_for_mode(
+                WorkspaceProvisioningAction::Create,
+                WorkspaceMode::InPlaceDirectory,
+                &[WorkspaceSourceInput::Directory {
+                    path: source_dir.to_string_lossy().to_string(),
+                    display_name: Some("   ".to_string()),
+                }],
+                Path::new("/tmp/unused"),
+                &[],
+                "unused-branch",
+            )
+            .await
+            .unwrap_err();
+
+            assert!(err.to_string().contains("single path component"));
+
+            let _ = tokio::fs::remove_dir_all(&source_dir).await;
         });
     }
 
@@ -2712,7 +3003,7 @@ mod tests {
             fs::create_dir_all(&workspace_dir).unwrap();
             symlink_dir(&real_repo_dir, &workspace_dir.join("repo"));
 
-            cleanup_in_place_git_workspace_root(&workspace_dir)
+            cleanup_in_place_workspace_root(&workspace_dir)
                 .await
                 .unwrap();
 
