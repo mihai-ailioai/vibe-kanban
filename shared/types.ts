@@ -132,6 +132,10 @@ selected_project_id: string | null,
  */
 create_draft_workspace_by_default: boolean | null, 
 /**
+ * Hide model thinking messages in chat UI by default
+ */
+hide_thinking_messages: boolean | null, 
+/**
  * Kanban project view selections (active view per project)
  */
 kanban_project_view_selections: { [key in string]?: JsonValue }, 

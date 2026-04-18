@@ -11,6 +11,7 @@ import {
 import {
   useUiPreferencesStore,
   DEFAULT_CREATE_DRAFT_WORKSPACE_BY_DEFAULT,
+  DEFAULT_HIDE_THINKING_MESSAGES,
   type RightMainPanelMode,
   type ContextBarPosition,
   type WorkspacePanelState,
@@ -48,6 +49,7 @@ function storeToScratchData(state: {
   selectedOrgId: string | null;
   selectedProjectId: string | null;
   createDraftWorkspaceByDefault: boolean;
+  hideThinkingMessages: boolean;
   kanbanProjectViewSelections: Record<string, KanbanProjectViewSelection>;
   kanbanProjectViewPreferences: Record<
     string,
@@ -84,6 +86,7 @@ function storeToScratchData(state: {
     selected_org_id: state.selectedOrgId,
     selected_project_id: state.selectedProjectId,
     create_draft_workspace_by_default: state.createDraftWorkspaceByDefault,
+    hide_thinking_messages: state.hideThinkingMessages,
     kanban_project_view_selections: state.kanbanProjectViewSelections as Record<
       string,
       JsonValue
@@ -112,6 +115,7 @@ function scratchDataToStore(data: UiPreferencesData): {
   selectedOrgId: string | null;
   selectedProjectId: string | null;
   createDraftWorkspaceByDefault: boolean;
+  hideThinkingMessages: boolean;
   kanbanProjectViewSelections: Record<string, KanbanProjectViewSelection>;
   kanbanProjectViewPreferences: Record<
     string,
@@ -171,6 +175,8 @@ function scratchDataToStore(data: UiPreferencesData): {
     createDraftWorkspaceByDefault:
       data.create_draft_workspace_by_default ??
       DEFAULT_CREATE_DRAFT_WORKSPACE_BY_DEFAULT,
+    hideThinkingMessages:
+      data.hide_thinking_messages ?? DEFAULT_HIDE_THINKING_MESSAGES,
     kanbanProjectViewSelections: (data.kanban_project_view_selections ??
       {}) as Record<string, KanbanProjectViewSelection>,
     kanbanProjectViewPreferences: (data.kanban_project_view_preferences ??
@@ -210,6 +216,7 @@ export function useUiPreferencesScratch() {
     selectedOrgId: state.selectedOrgId,
     selectedProjectId: state.selectedProjectId,
     createDraftWorkspaceByDefault: state.createDraftWorkspaceByDefault,
+    hideThinkingMessages: state.hideThinkingMessages,
     kanbanProjectViewSelections: state.kanbanProjectViewSelections,
     kanbanProjectViewPreferences: state.kanbanProjectViewPreferences,
   }));
@@ -242,6 +249,7 @@ export function useUiPreferencesScratch() {
       selectedOrgId: currentState.selectedOrgId,
       selectedProjectId: currentState.selectedProjectId,
       createDraftWorkspaceByDefault: currentState.createDraftWorkspaceByDefault,
+      hideThinkingMessages: currentState.hideThinkingMessages,
       kanbanProjectViewSelections: currentState.kanbanProjectViewSelections,
       kanbanProjectViewPreferences: currentState.kanbanProjectViewPreferences,
     });
@@ -291,6 +299,7 @@ export function useUiPreferencesScratch() {
         selectedProjectId: serverState.selectedProjectId,
         createDraftWorkspaceByDefault:
           serverState.createDraftWorkspaceByDefault,
+        hideThinkingMessages: serverState.hideThinkingMessages,
         kanbanProjectViewSelections: serverState.kanbanProjectViewSelections,
         kanbanProjectViewPreferences: serverState.kanbanProjectViewPreferences,
       });

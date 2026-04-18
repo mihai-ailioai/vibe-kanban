@@ -146,6 +146,9 @@ pub struct UiPreferencesData {
     /// Default setting for creating a draft workspace from new issues
     #[serde(default)]
     pub create_draft_workspace_by_default: Option<bool>,
+    /// Hide model thinking messages in chat UI by default
+    #[serde(default)]
+    pub hide_thinking_messages: Option<bool>,
     /// Kanban project view selections (active view per project)
     #[serde(default)]
     pub kanban_project_view_selections: std::collections::HashMap<String, serde_json::Value>,

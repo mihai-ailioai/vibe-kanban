@@ -24,6 +24,7 @@ export type MobileTab =
 
 export type MobileFontScale = 'default' | 'small' | 'smaller';
 export const DEFAULT_CREATE_DRAFT_WORKSPACE_BY_DEFAULT = false;
+export const DEFAULT_HIDE_THINKING_MESSAGES = true;
 
 const MOBILE_FONT_SCALE_KEY = 'vk-mobile-font-scale';
 
@@ -354,6 +355,7 @@ type State = {
   selectedOrgId: string | null;
   selectedProjectId: string | null;
   createDraftWorkspaceByDefault: boolean;
+  hideThinkingMessages: boolean;
 
   // UI preferences actions
   setRepoAction: (repoId: string, action: RepoAction) => void;
@@ -443,6 +445,7 @@ type State = {
   clearSelectedOrgId: () => void;
   setSelectedProjectId: (projectId: string | null) => void;
   setCreateDraftWorkspaceByDefault: (value: boolean) => void;
+  setHideThinkingMessages: (value: boolean) => void;
 };
 
 export const useUiPreferencesStore = create<State>()((set, get) => ({
@@ -486,6 +489,7 @@ export const useUiPreferencesStore = create<State>()((set, get) => ({
   selectedOrgId: null,
   selectedProjectId: null,
   createDraftWorkspaceByDefault: DEFAULT_CREATE_DRAFT_WORKSPACE_BY_DEFAULT,
+  hideThinkingMessages: DEFAULT_HIDE_THINKING_MESSAGES,
 
   // UI preferences actions
   setRepoAction: (repoId, action) =>
@@ -842,6 +846,7 @@ export const useUiPreferencesStore = create<State>()((set, get) => ({
   setSelectedProjectId: (projectId) => set({ selectedProjectId: projectId }),
   setCreateDraftWorkspaceByDefault: (value) =>
     set({ createDraftWorkspaceByDefault: value }),
+  setHideThinkingMessages: (value) => set({ hideThinkingMessages: value }),
 }));
 
 // Hook for repo action preference

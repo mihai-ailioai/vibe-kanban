@@ -14,14 +14,25 @@ export interface DerivedConversationTimeline {
   readonly rows: ConversationRow[];
 }
 
-function isRenderableConversationEntry(entry: DisplayEntry): boolean {
+interface DeriveConversationTimelineOptions {
+  hideThinkingMessages: boolean;
+}
+
+function isRenderableConversationEntry(
+  entry: DisplayEntry,
+  options: DeriveConversationTimelineOptions
+): boolean {
   if (
     entry.type === 'NORMALIZED_ENTRY' &&
     typeof entry.content !== 'string' &&
     'entry_type' in entry.content
   ) {
     const entryType = entry.content.entry_type.type;
-    return entryType !== 'next_action' && entryType !== 'token_usage_info';
+    return (
+      entryType !== 'next_action' &&
+      entryType !== 'token_usage_info' &&
+      (!options.hideThinkingMessages || entryType !== 'thinking')
+    );
   }
 
   return (
@@ -30,7 +41,8 @@ function isRenderableConversationEntry(entry: DisplayEntry): boolean {
     entry.type === 'STDERR' ||
     entry.type === 'AGGREGATED_GROUP' ||
     entry.type === 'AGGREGATED_DIFF_GROUP' ||
-    entry.type === 'AGGREGATED_THINKING_GROUP'
+    (!options.hideThinkingMessages &&
+      entry.type === 'AGGREGATED_THINKING_GROUP')
   );
 }
 
@@ -40,10 +52,11 @@ function isRenderableConversationEntry(entry: DisplayEntry): boolean {
 export function deriveConversationTimeline(
   entries: PatchTypeWithKey[],
   previousDisplayEntries: DisplayEntry[],
-  previousRows: ConversationRow[]
+  previousRows: ConversationRow[],
+  options: DeriveConversationTimelineOptions
 ): DerivedConversationTimeline {
-  const displayEntries = aggregateConsecutiveEntries(entries).filter(
-    isRenderableConversationEntry
+  const displayEntries = aggregateConsecutiveEntries(entries).filter((entry) =>
+    isRenderableConversationEntry(entry, options)
   );
 
   const rows = buildConversationRowsIncremental(

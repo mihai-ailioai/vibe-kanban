@@ -31,6 +31,7 @@ import { TagManager } from '@/shared/components/TagManager';
 import { useIsMobile } from '@/shared/hooks/useIsMobile';
 import {
   type MobileFontScale,
+  useUiPreferencesStore,
   useMobileFontScale,
 } from '@/shared/stores/useUiPreferencesStore';
 import { cn, playSound } from '@/shared/lib/utils';
@@ -60,6 +61,12 @@ export function GeneralSettingsSection() {
 
   const isMobile = useIsMobile();
   const [mobileFontScale, setMobileFontScale] = useMobileFontScale();
+  const hideThinkingMessages = useUiPreferencesStore(
+    (state) => state.hideThinkingMessages
+  );
+  const setHideThinkingMessages = useUiPreferencesStore(
+    (state) => state.setHideThinkingMessages
+  );
   const languageOptions = getLanguageOptions(
     t('language.browserDefault', {
       ns: 'common',
@@ -291,6 +298,14 @@ export function GeneralSettingsSection() {
             placeholder={t('settings.general.appearance.language.placeholder')}
           />
         </SettingsField>
+
+        <SettingsCheckbox
+          id="show-thinking-messages"
+          label={t('settings.general.appearance.thinkingMessages.label')}
+          description={t('settings.general.appearance.thinkingMessages.helper')}
+          checked={!hideThinkingMessages}
+          onChange={(checked) => setHideThinkingMessages(!checked)}
+        />
 
         {isMobile && (
           <SettingsField

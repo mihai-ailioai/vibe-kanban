@@ -36,6 +36,7 @@ import {
   isAggregatedGroup,
   isAggregatedDiffGroup,
   isAggregatedThinkingGroup,
+  type PatchTypeWithKey,
 } from '@/shared/hooks/useConversationHistory/types';
 import { useConversationHistory } from '../model/hooks/useConversationHistory';
 import { useSetTokenUsageInfo } from '../model/contexts/EntriesContext';
@@ -44,6 +45,7 @@ import type { RepoWithTargetBranch } from 'shared/types';
 import { ChatEmptyState } from '@vibe/ui/components/ChatEmptyState';
 import { ChatScriptPlaceholder } from '@vibe/ui/components/ChatScriptPlaceholder';
 import { ScriptFixerDialog } from '@/shared/dialogs/scripts/ScriptFixerDialog';
+import { useUiPreferencesStore } from '@/shared/stores/useUiPreferencesStore';
 
 interface ConversationListProps {
   attempt: WorkspaceWithSession;
@@ -164,6 +166,9 @@ export const ConversationList = forwardRef<
   const lastSettledTailStartIndexRef = useRef<number | null>(null);
   const { setEntries, reset } = useEntriesActions();
   const setTokenUsageInfo = useSetTokenUsageInfo();
+  const hideThinkingMessages = useUiPreferencesStore(
+    (state) => state.hideThinkingMessages
+  );
   const scriptOutputCacheRef = useRef<
     Map<string, { count: number; output: string }>
   >(new Map());
@@ -191,6 +196,12 @@ export const ConversationList = forwardRef<
   } | null>(null);
   const pendingInteractionAnchorFrameRef = useRef<number | null>(null);
   const pendingInteractionAnchorDeadlineRef = useRef(0);
+  const prevEntriesRef = useRef<DisplayEntry[]>([]);
+  const prevRowsRef = useRef<ConversationRow[]>([]);
+  const lastDerivedHideThinkingMessagesRef = useRef<boolean | null>(null);
+  const latestRawEntriesRef = useRef<PatchTypeWithKey[] | null>(null);
+  const hideThinkingMessagesRef = useRef(hideThinkingMessages);
+  hideThinkingMessagesRef.current = hideThinkingMessages;
 
   // Use ref to access current repos without causing callback recreation
   const reposRef = useRef(repos);
@@ -228,6 +239,26 @@ export const ConversationList = forwardRef<
   // Determine if configure buttons should be shown
   const canConfigure = repos.length > 0;
 
+  const applyDerivedTimeline = useCallback((rawEntries: PatchTypeWithKey[]) => {
+    const currentHideThinkingMessages = hideThinkingMessagesRef.current;
+
+    const derivedTimeline = deriveConversationTimeline(
+      rawEntries,
+      prevEntriesRef.current,
+      prevRowsRef.current,
+      {
+        hideThinkingMessages: currentHideThinkingMessages,
+      }
+    );
+
+    prevEntriesRef.current = derivedTimeline.displayEntries;
+    prevRowsRef.current = derivedTimeline.rows;
+    lastDerivedHideThinkingMessagesRef.current = currentHideThinkingMessages;
+
+    setFilteredEntries(derivedTimeline.displayEntries);
+    setDataVersion((current) => current + 1);
+  }, []);
+
   useEffect(() => {
     if (rafIdRef.current !== null) {
       cancelAnimationFrame(rafIdRef.current);
@@ -242,6 +273,10 @@ export const ConversationList = forwardRef<
     setHasSetupScriptRun(false);
     setHasCleanupScriptRun(false);
     setHasRunningProcess(false);
+    prevEntriesRef.current = [];
+    prevRowsRef.current = [];
+    lastDerivedHideThinkingMessagesRef.current = null;
+    latestRawEntriesRef.current = null;
     setFilteredEntries([]);
     setDataVersion(0);
     lastSettledTailStartIndexRef.current = null;
@@ -345,18 +380,8 @@ export const ConversationList = forwardRef<
     setHasCleanupScriptRun(derivedEntries.hasCleanupScriptRun);
     setHasRunningProcess(derivedEntries.hasRunningProcess);
     setTokenUsageInfo(derivedEntries.latestTokenUsageInfo);
-
-    const derivedTimeline = deriveConversationTimeline(
-      derivedEntries.entries,
-      prevEntriesRef.current,
-      prevRowsRef.current
-    );
-
-    prevEntriesRef.current = derivedTimeline.displayEntries;
-    prevRowsRef.current = derivedTimeline.rows;
-
-    setFilteredEntries(derivedTimeline.displayEntries);
-    setDataVersion((current) => current + 1);
+    latestRawEntriesRef.current = derivedEntries.entries;
+    applyDerivedTimeline(derivedEntries.entries);
     setEntries(derivedEntries.entries);
 
     scrollOnEntriesChangedRef.current?.(pending.addType, pending.isInitialLoad);
@@ -389,8 +414,20 @@ export const ConversationList = forwardRef<
     scopeKey: conversationScopeKey,
   });
 
-  const prevEntriesRef = useRef<DisplayEntry[]>([]);
-  const prevRowsRef = useRef<ConversationRow[]>([]);
+  useEffect(() => {
+    if (lastDerivedHideThinkingMessagesRef.current === hideThinkingMessages) {
+      return;
+    }
+
+    const rawEntries = latestRawEntriesRef.current;
+    if (!rawEntries) {
+      lastDerivedHideThinkingMessagesRef.current = hideThinkingMessages;
+      return;
+    }
+
+    applyDerivedTimeline(rawEntries);
+  }, [applyDerivedTimeline, hideThinkingMessages]);
+
   const conversationRows = useMemo(
     () => prevRowsRef.current,
     [filteredEntries]

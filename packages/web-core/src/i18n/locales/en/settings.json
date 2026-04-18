@@ -65,6 +65,10 @@
           "label": "Language",
           "placeholder": "Select language",
           "helper": "Choose your preferred language. Browser Default follows your system language."
+        },
+        "thinkingMessages": {
+          "label": "Show thinking messages",
+          "helper": "Show or hide thinking messages across all chats. This preference applies immediately and does not require saving."
         }
       },
       "taskExecution": {
