@@ -7,7 +7,11 @@ description: "Create pull requests, merge, rebase, and manage branches in Worksp
 <img style={{maxHeight: "300px"}} src="/images/workspaces-git-panel.png" alt="Git section in the details sidebar showing repository status, branches, and commit information" />
 </Frame>
 
-Workspaces provide integrated git operations for managing your code changes.
+This page applies to **Git-capable workspaces**: `git_worktree` and `in_place_git`.
+
+`in_place_directory` workspaces do not show Git status or Git actions such as pull requests, push, merge, or rebase.
+
+Git-capable workspaces provide integrated Git operations for managing your code changes.
 
 ## Git Basics for Workspaces
 
@@ -54,7 +58,7 @@ The "Merge" action in Workspaces pulls the target branch INTO your working branc
 
 ## Repository Status
 
-The Git section in the right sidebar shows:
+When a workspace supports Git, the Git section in the right sidebar shows:
 
 | Information | Description |
 |-------------|-------------|
@@ -71,11 +75,11 @@ The Git section in the right sidebar shows:
 <img style={{maxHeight: "400px"}} src="/images/workspaces-create-pr.png" alt="Create pull request dialog with title, description, and draft mode options" />
 </Frame>
 
-Create PRs directly from your workspace.
+Create PRs directly from a Git-capable workspace.
 
 ### Creating a PR
 
-**From the Git panel:**
+**From the Git panel (when available):**
 1. Click **Open pull request** in the Git section of the right sidebar
 2. Fill in the PR details
 
@@ -123,7 +127,7 @@ Pull the latest changes from the target branch into your working branch.
 
 ### Merge Process
 
-**From the Git panel:**
+**From the Git panel (when available):**
 1. Click the dropdown arrow next to **Open pull request**
 2. Select **Merge**
 
@@ -149,7 +153,7 @@ Keep your branch up to date with the target branch.
 
 ### Rebase Process
 
-**From the Git panel:**
+**From the Git panel (when available):**
 1. Click the target branch dropdown (e.g., **main**)
 2. Select **Rebase** from the menu
 
@@ -185,7 +189,7 @@ Switch the branch you're merging into.
 
 ### Changing the Target
 
-**From the Git panel:**
+**From the Git panel (when available):**
 1. Click the target branch dropdown (e.g., **main**) in the Git section
 2. Select a new target branch from the list
 
@@ -193,7 +197,7 @@ Switch the branch you're merging into.
 1. Press `Cmd/Ctrl + K` and select **Change Target Branch**
 2. Choose the new target branch
 
-The workspace updates to show the new ahead/behind status.
+The workspace updates to show the new ahead/behind status when Git tracking is available.
 
 ### Use Cases
 
@@ -214,7 +218,7 @@ The Push command appears when:
 
 ### Pushing
 
-**From the Git panel:**
+**From the Git panel (when available):**
 - Click the **Push** button when it appears (shows when you have unpushed commits)
 
 **From the command bar:**

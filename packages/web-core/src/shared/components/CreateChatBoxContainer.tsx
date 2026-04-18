@@ -9,12 +9,15 @@ import { useCreateWorkspace } from '@/shared/hooks/useCreateWorkspace';
 import { useCreateAttachments } from '@/shared/hooks/useCreateAttachments';
 import { useExecutorConfig } from '@/shared/hooks/useExecutorConfig';
 import { saveProjectRepoDefaults } from '@/shared/hooks/useProjectRepoDefaults';
-import { getSortedExecutorVariantKeys } from '@/shared/lib/executor';
+import {
+  buildCreateWorkspaceRequest,
+  buildWorkspaceSourcesForMode,
+} from '@/shared/lib/workspaceCreateState';
 import {
   toPrettyCase,
   splitMessageToTitleDescription,
 } from '@/shared/lib/string';
-import type { BaseCodingAgent, Repo } from 'shared/types';
+import type { Repo } from 'shared/types';
 import { CreateChatBox } from '@vibe/ui/components/CreateChatBox';
 import { SettingsDialog } from '@/shared/dialogs/settings/SettingsDialog';
 import { CreateModeRepoPickerBar } from './CreateModeRepoPickerBar';
@@ -42,10 +45,13 @@ export function CreateChatBoxContainer({
   const { t } = useTranslation('common');
   const { profiles, config } = useUserSystem();
   const {
+    workspaceMode,
+    directorySource,
     repos,
     targetBranches,
     message,
     setMessage,
+    setWorkspaceMode,
     clearDraft,
     hasInitialValue,
     hasResolvedInitialRepoDefaults,
@@ -60,25 +66,33 @@ export function CreateChatBoxContainer({
 
   const { createWorkspace } = useCreateWorkspace();
   const hasSelectedRepos = repos.length > 0;
+  const hasSelectedSource =
+    workspaceMode === 'in_place_directory'
+      ? !!directorySource
+      : hasSelectedRepos;
   const [hasAttemptedSubmit, setHasAttemptedSubmit] = useState(false);
   const [hasInitializedStep, setHasInitializedStep] = useState(false);
   const [isSelectingRepos, setIsSelectingRepos] = useState(true);
 
   useEffect(() => {
     if (!hasInitialValue || hasInitializedStep) return;
-    if (!hasSelectedRepos && !hasResolvedInitialRepoDefaults) return;
+    if (workspaceMode !== 'in_place_directory') {
+      if (!hasSelectedRepos && !hasResolvedInitialRepoDefaults) return;
+    }
 
-    setIsSelectingRepos(!hasSelectedRepos);
+    setIsSelectingRepos(!hasSelectedSource);
     setHasInitializedStep(true);
   }, [
     hasInitialValue,
     hasInitializedStep,
+    workspaceMode,
+    hasSelectedSource,
     hasSelectedRepos,
     hasResolvedInitialRepoDefaults,
   ]);
 
-  const showRepoPickerStep = !hasSelectedRepos || isSelectingRepos;
-  const showChatStep = hasSelectedRepos && !isSelectingRepos;
+  const showRepoPickerStep = !hasSelectedSource || isSelectingRepos;
+  const showChatStep = hasSelectedSource && !isSelectingRepos;
 
   // Attachment handling - insert markdown and track attachment IDs
   const handleInsertMarkdown = useCallback(
@@ -109,7 +123,7 @@ export function CreateChatBoxContainer({
 
   const { getRootProps, getInputProps, isDragActive } = useDropzone({
     onDrop,
-    disabled: createWorkspace.isPending || !hasSelectedRepos,
+    disabled: createWorkspace.isPending || !hasSelectedSource,
     noClick: true,
     noKeyboard: true,
   });
@@ -126,6 +140,8 @@ export function CreateChatBoxContainer({
     executorOptions,
     variantOptions,
     presetOptions,
+    setExecutor: handleExecutorChange,
+    setVariant: handlePresetSelect,
     setOverrides: setExecutorOverrides,
   } = useExecutorConfig({
     profiles,
@@ -137,6 +153,14 @@ export function CreateChatBoxContainer({
 
   const repoId = repos.length === 1 ? repos[0]?.id : undefined;
   const repoSummaryLabel = useMemo(() => {
+    if (workspaceMode === 'in_place_directory') {
+      return (
+        directorySource?.display_name ||
+        directorySource?.path ||
+        'Select folder'
+      );
+    }
+
     if (repos.length === 1) {
       const repo = repos[0];
       if (!repo) return '0 repositories selected';
@@ -148,17 +172,19 @@ export function CreateChatBoxContainer({
     }
 
     return `${repos.length} repositories selected`;
-  }, [repos, targetBranches]);
+  }, [directorySource, repos, targetBranches, workspaceMode]);
 
   const repoSummaryTitle = useMemo(
     () =>
-      repos
-        .map((repo) => {
-          const branch = targetBranches[repo.id] ?? 'Select branch';
-          return `${getRepoDisplayName(repo)} (${branch})`;
-        })
-        .join('\n'),
-    [repos, targetBranches]
+      workspaceMode === 'in_place_directory'
+        ? directorySource?.path || 'Select folder'
+        : repos
+            .map((repo) => {
+              const branch = targetBranches[repo.id] ?? 'Select branch';
+              return `${getRepoDisplayName(repo)} (${branch})`;
+            })
+            .join('\n'),
+    [directorySource, repos, targetBranches, workspaceMode]
   );
 
   const hasSelectedBranchesForAllRepos = repos.every(
@@ -167,58 +193,22 @@ export function CreateChatBoxContainer({
 
   // Determine if we can submit
   const canSubmit =
-    hasSelectedRepos &&
-    hasSelectedBranchesForAllRepos &&
+    hasSelectedSource &&
+    (workspaceMode === 'in_place_directory' ||
+      hasSelectedBranchesForAllRepos) &&
     message.trim().length > 0 &&
     effectiveExecutor !== null;
 
-  const handlePresetSelect = (presetId: string | null) => {
-    if (!effectiveExecutor) return;
-    setDraftConfig({
-      ...draftConfig,
-      executor: effectiveExecutor,
-      variant: presetId,
-    });
-  };
+  const modeWarning =
+    workspaceMode === 'in_place_git'
+      ? 'Changes will be made directly in the selected repository. Use Git worktree if you want isolation.'
+      : workspaceMode === 'in_place_directory'
+        ? 'This workspace runs directly in the selected folder. Git actions and pull request flows will be unavailable.'
+        : null;
 
   const handleCustomise = () => {
     SettingsDialog.show({ initialSection: 'agents' });
   };
-
-  // Handle executor change - use saved variant if switching to default executor
-  const handleExecutorChange = useCallback(
-    (executor: BaseCodingAgent) => {
-      const executorProfile = profiles?.[executor];
-      if (!executorProfile) {
-        setDraftConfig({ executor, variant: null });
-        return;
-      }
-
-      const variants = getSortedExecutorVariantKeys(executorProfile);
-      let targetVariant: string | null = null;
-
-      // If switching to user's default executor, use their saved variant
-      if (
-        config?.executor_profile?.executor === executor &&
-        config?.executor_profile?.variant
-      ) {
-        const savedVariant = config.executor_profile.variant;
-        if (variants.includes(savedVariant)) {
-          targetVariant = savedVariant;
-        }
-      }
-
-      // Fallback to DEFAULT or first available
-      if (!targetVariant) {
-        targetVariant = variants.includes('DEFAULT')
-          ? 'DEFAULT'
-          : (variants[0] ?? null);
-      }
-
-      setDraftConfig({ executor, variant: targetVariant });
-    },
-    [profiles, setDraftConfig, config?.executor_profile]
-  );
 
   // Handle submit
   const handleSubmit = useCallback(async () => {
@@ -226,22 +216,29 @@ export function CreateChatBoxContainer({
     if (!canSubmit || !executorConfig) return;
 
     const { title } = splitMessageToTitleDescription(message);
-    const data = {
-      executor_config: executorConfig,
+    const selectedRepos = repos.map((r) => ({
+      repo_id: r.id,
+      target_branch: targetBranches[r.id]!,
+    }));
+    const sources = buildWorkspaceSourcesForMode({
+      workspaceMode,
+      repos: selectedRepos,
+      directorySource,
+    });
+    const data = buildCreateWorkspaceRequest({
       name: title,
       prompt: message,
-      repos: repos.map((r) => ({
-        repo_id: r.id,
-        target_branch: targetBranches[r.id]!,
-      })),
-      linked_issue: linkedIssue
+      executorConfig,
+      workspaceMode,
+      sources,
+      linkedIssue: linkedIssue
         ? {
-            remote_project_id: linkedIssue.remoteProjectId,
-            issue_id: linkedIssue.issueId,
+            remoteProjectId: linkedIssue.remoteProjectId,
+            issueId: linkedIssue.issueId,
           }
         : null,
-      attachment_ids: getAttachmentIds(),
-    };
+      attachmentIds: getAttachmentIds() ?? [],
+    });
     const linkToIssue = linkedIssue
       ? {
           remoteProjectId: linkedIssue.remoteProjectId,
@@ -259,7 +256,7 @@ export function CreateChatBoxContainer({
     }
 
     if (linkedIssue?.remoteProjectId) {
-      saveProjectRepoDefaults(linkedIssue.remoteProjectId, data.repos).catch(
+      saveProjectRepoDefaults(linkedIssue.remoteProjectId, selectedRepos).catch(
         (err) => console.warn('Failed to save project repo defaults:', err)
       );
     }
@@ -268,9 +265,11 @@ export function CreateChatBoxContainer({
     await clearDraft();
   }, [
     canSubmit,
+    directorySource,
     executorConfig,
     message,
     repos,
+    workspaceMode,
     targetBranches,
     createWorkspace,
     onWorkspaceCreated,
@@ -282,9 +281,13 @@ export function CreateChatBoxContainer({
 
   // Determine error to display
   const displayError =
-    hasAttemptedSubmit && repos.length === 0
-      ? 'Add at least one repository to create a workspace'
-      : hasAttemptedSubmit && !hasSelectedBranchesForAllRepos
+    hasAttemptedSubmit && !hasSelectedSource
+      ? workspaceMode === 'in_place_directory'
+        ? 'Select a folder before creating a workspace'
+        : 'Add at least one repository to create a workspace'
+      : hasAttemptedSubmit &&
+          workspaceMode !== 'in_place_directory' &&
+          !hasSelectedBranchesForAllRepos
         ? 'Select a branch for every repository before creating a workspace'
         : createWorkspace.error
           ? createWorkspace.error instanceof Error
@@ -308,6 +311,8 @@ export function CreateChatBoxContainer({
                 {t('createMode.headings.repoStep')}
               </h2>
               <CreateModeRepoPickerBar
+                workspaceMode={workspaceMode}
+                onWorkspaceModeChange={setWorkspaceMode}
                 onContinueToPrompt={() => setIsSelectingRepos(false)}
               />
             </>
@@ -320,87 +325,102 @@ export function CreateChatBoxContainer({
               </h2>
 
               <div className="flex justify-center @container">
-                <CreateChatBox
-                  editor={{
-                    value: message,
-                    onChange: setMessage,
-                  }}
-                  renderEditor={({
-                    value,
-                    onChange,
-                    onCmdEnter,
-                    disabled,
-                    repoIds,
-                    repoId,
-                    executor,
-                    onPasteFiles,
-                    localAttachments,
-                  }) => (
-                    <WYSIWYGEditor
-                      placeholder="Describe the task..."
-                      value={value}
-                      onChange={onChange}
-                      onCmdEnter={onCmdEnter}
-                      disabled={disabled}
-                      className="min-h-double max-h-[50vh] overflow-y-auto"
-                      repoIds={repoIds}
-                      repoId={repoId}
-                      executor={executor}
-                      autoFocus
-                      onPasteFiles={onPasteFiles}
-                      localAttachments={localAttachments}
-                      sendShortcut={config?.send_message_shortcut}
-                    />
+                <div className="flex w-full flex-col gap-half">
+                  {modeWarning && (
+                    <div className="rounded-sm border border-brand/20 bg-brand/5 px-base py-half text-sm text-normal">
+                      {modeWarning}
+                    </div>
                   )}
-                  agentIcon={
-                    <AgentIcon
-                      agent={effectiveExecutor}
-                      className="size-icon-xl"
-                    />
-                  }
-                  onSend={handleSubmit}
-                  isSending={createWorkspace.isPending}
-                  disabled={!hasSelectedRepos}
-                  executor={{
-                    selected: effectiveExecutor,
-                    options: executorOptions,
-                    onChange: handleExecutorChange,
-                  }}
-                  formatExecutorLabel={toPrettyCase}
-                  error={displayError}
-                  repoIds={repos.map((r) => r.id)}
-                  repoId={repoId}
-                  modelSelector={
-                    effectiveExecutor ? (
-                      <ModelSelectorContainer
-                        agent={effectiveExecutor}
-                        workspaceId={undefined}
-                        onAdvancedSettings={handleCustomise}
-                        presets={variantOptions}
-                        selectedPreset={selectedVariant}
-                        onPresetSelect={handlePresetSelect}
-                        onOverrideChange={setExecutorOverrides}
-                        executorConfig={executorConfig}
-                        presetOptions={presetOptions}
+                  <CreateChatBox
+                    editor={{
+                      value: message,
+                      onChange: setMessage,
+                    }}
+                    renderEditor={({
+                      value,
+                      onChange,
+                      onCmdEnter,
+                      disabled,
+                      repoIds,
+                      repoId,
+                      executor,
+                      onPasteFiles,
+                      localAttachments,
+                    }) => (
+                      <WYSIWYGEditor
+                        placeholder="Describe the task..."
+                        value={value}
+                        onChange={onChange}
+                        onCmdEnter={onCmdEnter}
+                        disabled={disabled}
+                        className="min-h-double max-h-[50vh] overflow-y-auto"
+                        repoIds={repoIds}
+                        repoId={repoId}
+                        executor={executor}
+                        autoFocus
+                        onPasteFiles={onPasteFiles}
+                        localAttachments={localAttachments}
+                        sendShortcut={config?.send_message_shortcut}
                       />
-                    ) : undefined
-                  }
-                  onPasteFiles={uploadFiles}
-                  localAttachments={localAttachments}
-                  dropzone={{ getRootProps, getInputProps, isDragActive }}
-                  onEditRepos={() => setIsSelectingRepos(true)}
-                  repoSummaryLabel={repoSummaryLabel}
-                  repoSummaryTitle={repoSummaryTitle}
-                  linkedIssue={
-                    linkedIssue?.simpleId
-                      ? {
-                          simpleId: linkedIssue.simpleId,
-                          title: linkedIssue.title ?? '',
-                          onRemove: clearLinkedIssue,
-                        }
-                      : null
-                  }
-                />
+                    )}
+                    agentIcon={
+                      <AgentIcon
+                        agent={effectiveExecutor}
+                        className="size-icon-xl"
+                      />
+                    }
+                    onSend={handleSubmit}
+                    isSending={createWorkspace.isPending}
+                    disabled={!hasSelectedSource}
+                    executor={{
+                      selected: effectiveExecutor,
+                      options: executorOptions,
+                      onChange: handleExecutorChange,
+                    }}
+                    formatExecutorLabel={toPrettyCase}
+                    error={displayError}
+                    repoIds={
+                      workspaceMode === 'in_place_directory'
+                        ? []
+                        : repos.map((r) => r.id)
+                    }
+                    repoId={
+                      workspaceMode === 'in_place_directory'
+                        ? undefined
+                        : repoId
+                    }
+                    modelSelector={
+                      effectiveExecutor ? (
+                        <ModelSelectorContainer
+                          agent={effectiveExecutor}
+                          workspaceId={undefined}
+                          onAdvancedSettings={handleCustomise}
+                          presets={variantOptions}
+                          selectedPreset={selectedVariant}
+                          onPresetSelect={handlePresetSelect}
+                          onOverrideChange={setExecutorOverrides}
+                          executorConfig={executorConfig}
+                          presetOptions={presetOptions}
+                        />
+                      ) : undefined
+                    }
+                    onPasteFiles={uploadFiles}
+                    localAttachments={localAttachments}
+                    dropzone={{ getRootProps, getInputProps, isDragActive }}
+                    onEditRepos={() => setIsSelectingRepos(true)}
+                    repoSummaryLabel={repoSummaryLabel}
+                    repoSummaryTitle={repoSummaryTitle}
+                    linkedIssue={
+                      linkedIssue?.simpleId
+                        ? {
+                            simpleId: linkedIssue.simpleId,
+                            title: linkedIssue.title ?? '',
+                            onRemove: clearLinkedIssue,
+                          }
+                        : null
+                    }
+                  />
+                </div>
               </div>
             </>
           )}

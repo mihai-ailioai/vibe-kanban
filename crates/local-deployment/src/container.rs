@@ -1,5 +1,5 @@
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     io,
     path::{Path, PathBuf},
     sync::Arc,
@@ -18,10 +18,16 @@ use db::{
         },
         execution_process_repo_state::ExecutionProcessRepoState,
         repo::Repo,
+        requests::WorkspaceSourceInput,
         scratch::{DraftFollowUpData, Scratch, ScratchType},
         session::{Session, SessionError},
-        workspace::Workspace,
-        workspace_repo::WorkspaceRepo,
+        workspace::{Workspace, WorkspaceMode},
+        workspace_repo::{CreateWorkspaceRepo, WorkspaceRepo},
+        workspace_repo_claim::{CreateWorkspaceRepoClaim, WorkspaceRepoClaim},
+        workspace_source::{
+            WorkspaceSource, WorkspaceSourceKind, directory_workspace_entry_name,
+            validate_directory_workspace_entry_name,
+        },
     },
 };
 use deployment::DeploymentError;
@@ -85,6 +91,372 @@ pub struct LocalContainerService {
     queued_message_service: QueuedMessageService,
     notification_service: NotificationService,
     remote_client: Option<RemoteClient>,
+}
+
+struct WorkspaceProvisioningContext {
+    sources: Vec<WorkspaceSourceInput>,
+    repositories: Vec<Repo>,
+    workspace_inputs: Vec<RepoWorkspaceInput>,
+}
+
+struct DirectoryWorkspaceInput {
+    source_path: PathBuf,
+    entry_name: String,
+}
+
+#[derive(Clone, Copy)]
+enum WorkspaceProvisioningAction {
+    Create,
+    EnsureExists,
+}
+
+fn create_workspace_repo_records(
+    workspace_inputs: &[RepoWorkspaceInput],
+) -> Vec<CreateWorkspaceRepo> {
+    workspace_inputs
+        .iter()
+        .map(|input| CreateWorkspaceRepo {
+            repo_id: input.repo.id,
+            target_branch: input.target_branch.clone(),
+        })
+        .collect()
+}
+
+fn create_workspace_repo_claims(
+    workspace_inputs: &[RepoWorkspaceInput],
+) -> Vec<CreateWorkspaceRepoClaim> {
+    workspace_inputs
+        .iter()
+        .map(|input| CreateWorkspaceRepoClaim {
+            repo_id: input.repo.id,
+        })
+        .collect()
+}
+
+fn workspace_repo_entry_path(workspace_dir: &Path, repo_name: &str) -> PathBuf {
+    workspace_dir.join(repo_name)
+}
+
+#[cfg(unix)]
+fn create_dir_symlink(source: &Path, target: &Path) -> Result<(), ContainerError> {
+    std::os::unix::fs::symlink(source, target)?;
+    Ok(())
+}
+
+#[cfg(windows)]
+fn create_dir_symlink(source: &Path, target: &Path) -> Result<(), ContainerError> {
+    std::os::windows::fs::symlink_dir(source, target)?;
+    Ok(())
+}
+
+fn ensure_workspace_entry_symlink(
+    source_path: &Path,
+    entry_path: &Path,
+) -> Result<(), ContainerError> {
+    match std::fs::symlink_metadata(entry_path) {
+        Ok(metadata) if metadata.file_type().is_symlink() => {
+            let current_target = std::fs::read_link(entry_path)?;
+            if current_target == source_path {
+                return Ok(());
+            }
+
+            std::fs::remove_file(entry_path)?;
+        }
+        Ok(_) => {
+            return Err(ContainerError::Other(anyhow!(
+                "Workspace entry {} already exists and is not a symlink",
+                entry_path.display()
+            )));
+        }
+        Err(err) if err.kind() == io::ErrorKind::NotFound => {}
+        Err(err) => return Err(ContainerError::Io(err)),
+    }
+
+    create_dir_symlink(source_path, entry_path)
+}
+
+fn ensure_workspace_root_symlinks(
+    workspace_dir: &Path,
+    workspace_inputs: &[RepoWorkspaceInput],
+) -> Result<(), ContainerError> {
+    std::fs::create_dir_all(workspace_dir)?;
+
+    for input in workspace_inputs {
+        let entry_path = workspace_repo_entry_path(workspace_dir, &input.repo.name);
+        ensure_workspace_entry_symlink(&input.repo.path, &entry_path)?;
+    }
+
+    Ok(())
+}
+
+fn validate_workspace_entry_name(entry_name: &str) -> Result<(), ContainerError> {
+    if validate_directory_workspace_entry_name(entry_name).is_err() {
+        return Err(ContainerError::Other(anyhow!(
+            "Directory workspace entry name '{}' must be a single path component",
+            entry_name
+        )));
+    }
+
+    Ok(())
+}
+
+fn validate_in_place_directory_workspace_source(
+    sources: &[WorkspaceSourceInput],
+) -> Result<DirectoryWorkspaceInput, ContainerError> {
+    let [WorkspaceSourceInput::Directory { path, display_name }] = sources else {
+        return Err(ContainerError::Other(anyhow!(
+            "Workspace mode `in_place_directory` requires exactly one `directory` source"
+        )));
+    };
+
+    let source_path = PathBuf::from(path);
+    if !source_path.exists() {
+        return Err(ContainerError::Other(anyhow!(
+            "Directory workspace source {} does not exist",
+            source_path.display()
+        )));
+    }
+    if !source_path.is_dir() {
+        return Err(ContainerError::Other(anyhow!(
+            "Directory workspace source {} must be a directory",
+            source_path.display()
+        )));
+    }
+    let source_path = source_path.canonicalize()?;
+
+    if let Some(display_name) = display_name.as_deref() {
+        validate_workspace_entry_name(display_name)?;
+    }
+
+    let entry_name = directory_workspace_entry_name(display_name.as_deref(), &source_path)
+        .ok_or_else(|| {
+            ContainerError::Other(anyhow!(
+                "Directory workspace source {} must have a usable name",
+                source_path.display()
+            ))
+        })?;
+
+    validate_workspace_entry_name(&entry_name)?;
+
+    Ok(DirectoryWorkspaceInput {
+        source_path,
+        entry_name,
+    })
+}
+
+fn ensure_single_directory_workspace_root(
+    workspace_dir: &Path,
+    input: &DirectoryWorkspaceInput,
+) -> Result<(), ContainerError> {
+    std::fs::create_dir_all(workspace_dir)?;
+    let entry_path = workspace_dir.join(&input.entry_name);
+    ensure_workspace_entry_symlink(&input.source_path, &entry_path)
+}
+
+fn validate_in_place_git_workspace_inputs(
+    action: WorkspaceProvisioningAction,
+    git: &GitService,
+    workspace_inputs: &[RepoWorkspaceInput],
+) -> Result<(), ContainerError> {
+    if workspace_inputs.is_empty() {
+        return Err(ContainerError::Other(anyhow!(
+            "Workspace mode `in_place_git` requires at least one repository"
+        )));
+    }
+
+    let mut seen_repo_names = HashSet::new();
+    for input in workspace_inputs {
+        if !seen_repo_names.insert(input.repo.name.clone()) {
+            return Err(ContainerError::Other(anyhow!(
+                "Workspace contains multiple repositories named '{}' which would collide in the synthetic workspace root",
+                input.repo.name
+            )));
+        }
+    }
+
+    for input in workspace_inputs {
+        if !git.is_repo_openable(&input.repo.path) {
+            return Err(ContainerError::GitServiceError(
+                git::GitServiceError::InvalidRepository(input.repo.path.display().to_string()),
+            ));
+        }
+
+        if matches!(action, WorkspaceProvisioningAction::Create) {
+            if !git.check_local_branch_exists(&input.repo.path, &input.target_branch)? {
+                return Err(ContainerError::GitServiceError(
+                    git::GitServiceError::BranchNotFound(input.target_branch.clone()),
+                ));
+            }
+
+            git.ensure_repo_clean_including_untracked(&input.repo.path)?;
+        }
+    }
+
+    Ok(())
+}
+
+async fn release_in_place_git_claims_for_workspace(
+    db: &DBService,
+    workspace: &Workspace,
+) -> Result<(), ContainerError> {
+    if workspace.workspace_mode == WorkspaceMode::InPlaceGit {
+        WorkspaceRepoClaim::release_for_workspace(&db.pool, workspace.id).await?;
+    }
+
+    Ok(())
+}
+
+pub async fn cleanup_in_place_workspace_root(workspace_dir: &Path) -> Result<(), ContainerError> {
+    WorkspaceManager::cleanup_workspace_root_in_base_dir(workspace_dir)
+        .await
+        .map_err(LocalContainerService::map_workspace_manager_error)
+}
+
+async fn provision_workspace_for_mode(
+    action: WorkspaceProvisioningAction,
+    workspace_mode: WorkspaceMode,
+    sources: &[WorkspaceSourceInput],
+    workspace_dir: &Path,
+    workspace_inputs: &[RepoWorkspaceInput],
+    branch_name: &str,
+) -> Result<PathBuf, ContainerError> {
+    let git = GitService::new();
+    let expects_git_sources = || {
+        sources
+            .iter()
+            .all(|source| matches!(source, WorkspaceSourceInput::GitRepo { .. }))
+    };
+    let expects_directory_sources = || {
+        sources
+            .iter()
+            .all(|source| matches!(source, WorkspaceSourceInput::Directory { .. }))
+    };
+
+    match (action, workspace_mode) {
+        (WorkspaceProvisioningAction::Create, WorkspaceMode::GitWorktree) => {
+            if !expects_git_sources() {
+                return Err(ContainerError::Other(anyhow!(
+                    "Workspace mode `git_worktree` requires `git_repo` sources"
+                )));
+            }
+
+            let created_workspace =
+                WorkspaceManager::create_workspace(workspace_dir, workspace_inputs, branch_name)
+                    .await
+                    .map_err(LocalContainerService::map_workspace_manager_error)?;
+
+            Ok(created_workspace.workspace_dir)
+        }
+        (WorkspaceProvisioningAction::EnsureExists, WorkspaceMode::GitWorktree) => {
+            if !expects_git_sources() {
+                return Err(ContainerError::Other(anyhow!(
+                    "Workspace mode `git_worktree` requires `git_repo` sources"
+                )));
+            }
+
+            WorkspaceManager::ensure_workspace_exists(workspace_dir, workspace_inputs, branch_name)
+                .await
+                .map_err(LocalContainerService::map_workspace_manager_error)?;
+
+            Ok(workspace_dir.to_path_buf())
+        }
+        (_, WorkspaceMode::InPlaceGit) => {
+            if !expects_git_sources() {
+                return Err(ContainerError::Other(anyhow!(
+                    "Workspace mode `in_place_git` requires `git_repo` sources"
+                )));
+            }
+
+            validate_in_place_git_workspace_inputs(action, &git, workspace_inputs)?;
+
+            if matches!(action, WorkspaceProvisioningAction::Create) {
+                for input in workspace_inputs {
+                    git.ensure_local_branch_checked_out(
+                        &input.repo.path,
+                        branch_name,
+                        &input.target_branch,
+                    )?;
+                }
+            }
+
+            ensure_workspace_root_symlinks(workspace_dir, workspace_inputs)?;
+
+            Ok(workspace_dir.to_path_buf())
+        }
+        (_, WorkspaceMode::InPlaceDirectory) => {
+            if !expects_directory_sources() {
+                return Err(ContainerError::Other(anyhow!(
+                    "Workspace mode `in_place_directory` requires `directory` sources"
+                )));
+            }
+
+            let input = validate_in_place_directory_workspace_source(sources)?;
+            ensure_single_directory_workspace_root(workspace_dir, &input)?;
+
+            Ok(workspace_dir.to_path_buf())
+        }
+    }
+}
+
+fn workspace_source_to_input(
+    source: WorkspaceSource,
+) -> Result<WorkspaceSourceInput, ContainerError> {
+    match source.source_type {
+        WorkspaceSourceKind::GitRepo => Ok(WorkspaceSourceInput::GitRepo {
+            repo_id: source.repo_id.ok_or_else(|| {
+                ContainerError::Other(anyhow!(
+                    "Git workspace source {} is missing repo_id",
+                    source.id
+                ))
+            })?,
+            target_branch: source.target_branch.ok_or_else(|| {
+                ContainerError::Other(anyhow!(
+                    "Git workspace source {} is missing target_branch",
+                    source.id
+                ))
+            })?,
+        }),
+        WorkspaceSourceKind::Directory => Ok(WorkspaceSourceInput::Directory {
+            path: source.path.ok_or_else(|| {
+                ContainerError::Other(anyhow!(
+                    "Directory workspace source {} is missing path",
+                    source.id
+                ))
+            })?,
+            display_name: source.display_name,
+        }),
+    }
+}
+
+fn legacy_git_worktree_sources(
+    workspace_inputs: &[RepoWorkspaceInput],
+) -> Vec<WorkspaceSourceInput> {
+    workspace_inputs
+        .iter()
+        .map(|input| WorkspaceSourceInput::GitRepo {
+            repo_id: input.repo.id,
+            target_branch: input.target_branch.clone(),
+        })
+        .collect()
+}
+
+fn resolve_provisioning_sources(
+    workspace_mode: WorkspaceMode,
+    persisted_sources: Vec<WorkspaceSource>,
+    workspace_inputs: &[RepoWorkspaceInput],
+) -> Result<Vec<WorkspaceSourceInput>, ContainerError> {
+    if !persisted_sources.is_empty() {
+        return persisted_sources
+            .into_iter()
+            .map(workspace_source_to_input)
+            .collect();
+    }
+
+    if workspace_mode == WorkspaceMode::GitWorktree {
+        return Ok(legacy_git_worktree_sources(workspace_inputs));
+    }
+
+    Ok(Vec::new())
 }
 
 impl LocalContainerService {
@@ -193,6 +565,123 @@ impl LocalContainerService {
         Ok((repositories, workspace_inputs))
     }
 
+    async fn in_place_git_workspace_inputs(
+        &self,
+        sources: &[WorkspaceSourceInput],
+    ) -> Result<(Vec<Repo>, Vec<RepoWorkspaceInput>), ContainerError> {
+        let mut repositories = Vec::with_capacity(sources.len());
+        let mut workspace_inputs = Vec::with_capacity(sources.len());
+
+        for source in sources {
+            let WorkspaceSourceInput::GitRepo {
+                repo_id,
+                target_branch,
+            } = source
+            else {
+                return Err(ContainerError::Other(anyhow!(
+                    "Workspace mode `in_place_git` requires `git_repo` sources"
+                )));
+            };
+
+            let repo = Repo::find_by_id(&self.db.pool, *repo_id)
+                .await?
+                .ok_or_else(|| {
+                    ContainerError::Other(anyhow!("Repository {} not found", repo_id))
+                })?;
+            workspace_inputs.push(RepoWorkspaceInput::new(repo.clone(), target_branch.clone()));
+            repositories.push(repo);
+        }
+
+        Ok((repositories, workspace_inputs))
+    }
+
+    async fn acquire_in_place_git_claims(
+        &self,
+        workspace_id: Uuid,
+        workspace_inputs: &[RepoWorkspaceInput],
+    ) -> Result<(), ContainerError> {
+        let repo_ids = workspace_inputs
+            .iter()
+            .map(|input| input.repo.id)
+            .collect::<Vec<_>>();
+        let conflicts =
+            WorkspaceRepoClaim::find_conflicting_repo_ids(&self.db.pool, workspace_id, &repo_ids)
+                .await?;
+
+        if !conflicts.is_empty() {
+            return Err(ContainerError::Other(anyhow!(
+                "One or more repositories are already claimed by another running workspace"
+            )));
+        }
+
+        WorkspaceRepoClaim::create_many(
+            &self.db.pool,
+            workspace_id,
+            &create_workspace_repo_claims(workspace_inputs),
+        )
+        .await?;
+
+        Ok(())
+    }
+
+    async fn sync_in_place_git_workspace_repos(
+        &self,
+        workspace_id: Uuid,
+        workspace_inputs: &[RepoWorkspaceInput],
+    ) -> Result<(), ContainerError> {
+        WorkspaceRepo::sync_for_workspace(
+            &self.db.pool,
+            workspace_id,
+            &create_workspace_repo_records(workspace_inputs),
+        )
+        .await?;
+
+        Ok(())
+    }
+
+    async fn workspace_provisioning_context(
+        &self,
+        workspace: &Workspace,
+    ) -> Result<WorkspaceProvisioningContext, ContainerError> {
+        let persisted_sources =
+            WorkspaceSource::find_by_workspace_id(&self.db.pool, workspace.id).await?;
+        let (repositories, workspace_inputs, sources) = match workspace.workspace_mode {
+            WorkspaceMode::GitWorktree => {
+                let (repositories, workspace_inputs) =
+                    self.workspace_repo_inputs(workspace.id).await?;
+                let sources = resolve_provisioning_sources(
+                    workspace.workspace_mode,
+                    persisted_sources,
+                    &workspace_inputs,
+                )?;
+                (repositories, workspace_inputs, sources)
+            }
+            WorkspaceMode::InPlaceGit => {
+                let sources =
+                    resolve_provisioning_sources(workspace.workspace_mode, persisted_sources, &[])?;
+                let (repositories, workspace_inputs) =
+                    self.in_place_git_workspace_inputs(&sources).await?;
+                (repositories, workspace_inputs, sources)
+            }
+            WorkspaceMode::InPlaceDirectory => {
+                let sources =
+                    resolve_provisioning_sources(workspace.workspace_mode, persisted_sources, &[])?;
+                (Vec::new(), Vec::new(), sources)
+            }
+        };
+        if sources.is_empty() {
+            return Err(ContainerError::Other(anyhow!(
+                "Workspace has no sources configured"
+            )));
+        }
+
+        Ok(WorkspaceProvisioningContext {
+            sources,
+            repositories,
+            workspace_inputs,
+        })
+    }
+
     async fn get_child_from_store(&self, id: &Uuid) -> Option<Arc<RwLock<AsyncGroupChild>>> {
         let map = self.child_store.read().await;
         map.get(id).cloned()
@@ -243,6 +732,26 @@ impl LocalContainerService {
             return;
         };
         let workspace_dir = PathBuf::from(container_ref);
+
+        let _ = release_in_place_git_claims_for_workspace(&self.db, workspace).await;
+
+        if matches!(
+            workspace.workspace_mode,
+            WorkspaceMode::InPlaceGit | WorkspaceMode::InPlaceDirectory
+        ) {
+            cleanup_in_place_workspace_root(&workspace_dir)
+                .await
+                .unwrap_or_else(|e| {
+                    tracing::warn!(
+                        "Failed to clean up in-place workspace for workspace {}: {}",
+                        workspace.id,
+                        e
+                    );
+                });
+
+            let _ = Workspace::mark_worktree_deleted(&self.db.pool, workspace.id).await;
+            return;
+        }
 
         let repositories = WorkspaceRepo::find_repos_for_workspace(&self.db.pool, workspace.id)
             .await
@@ -1200,34 +1709,58 @@ impl ContainerService for LocalContainerService {
             LocalContainerService::dir_name_from_workspace(&workspace.id, label);
         let workspace_dir = WorkspaceManager::get_workspace_base_dir().join(&workspace_dir_name);
 
-        let (repositories, workspace_inputs) = self.workspace_repo_inputs(workspace.id).await?;
+        let context = self.workspace_provisioning_context(workspace).await?;
 
-        let created_workspace = WorkspaceManager::create_workspace(
-            &workspace_dir,
-            &workspace_inputs,
-            &workspace.branch,
-        )
-        .await
-        .map_err(Self::map_workspace_manager_error)?;
+        if workspace.workspace_mode == WorkspaceMode::InPlaceGit {
+            validate_in_place_git_workspace_inputs(
+                WorkspaceProvisioningAction::Create,
+                self.git(),
+                &context.workspace_inputs,
+            )?;
+            self.acquire_in_place_git_claims(workspace.id, &context.workspace_inputs)
+                .await?;
+        }
 
-        // Copy project files and images to workspace
-        self.copy_files_and_images(&created_workspace.workspace_dir, workspace)
+        let result = async {
+            let created_workspace_dir = provision_workspace_for_mode(
+                WorkspaceProvisioningAction::Create,
+                workspace.workspace_mode,
+                &context.sources,
+                &workspace_dir,
+                &context.workspace_inputs,
+                &workspace.branch,
+            )
             .await?;
 
-        Self::create_workspace_config_files(&created_workspace.workspace_dir, &repositories)
+            if workspace.workspace_mode == WorkspaceMode::InPlaceGit {
+                self.sync_in_place_git_workspace_repos(workspace.id, &context.workspace_inputs)
+                    .await?;
+            }
+
+            self.copy_files_and_images(&created_workspace_dir, workspace)
+                .await?;
+            Self::create_workspace_config_files(&created_workspace_dir, &context.repositories)
+                .await?;
+            Workspace::update_container_ref(
+                &self.db.pool,
+                workspace.id,
+                &created_workspace_dir.to_string_lossy(),
+            )
             .await?;
 
-        Workspace::update_container_ref(
-            &self.db.pool,
-            workspace.id,
-            &created_workspace.workspace_dir.to_string_lossy(),
-        )
-        .await?;
+            Ok::<String, ContainerError>(created_workspace_dir.to_string_lossy().to_string())
+        }
+        .await;
 
-        Ok(created_workspace
-            .workspace_dir
-            .to_string_lossy()
-            .to_string())
+        match result {
+            Ok(container_ref) => Ok(container_ref),
+            Err(err) => {
+                if workspace.workspace_mode == WorkspaceMode::InPlaceGit {
+                    let _ = release_in_place_git_claims_for_workspace(&self.db, workspace).await;
+                }
+                Err(err)
+            }
+        }
     }
 
     async fn delete(&self, workspace: &Workspace) -> Result<(), ContainerError> {
@@ -1241,7 +1774,17 @@ impl ContainerService for LocalContainerService {
         workspace: &Workspace,
     ) -> Result<ContainerRef, ContainerError> {
         self.touch(workspace).await?;
-        let (repositories, workspace_inputs) = self.workspace_repo_inputs(workspace.id).await?;
+        let context = self.workspace_provisioning_context(workspace).await?;
+
+        if workspace.workspace_mode == WorkspaceMode::InPlaceGit {
+            validate_in_place_git_workspace_inputs(
+                WorkspaceProvisioningAction::EnsureExists,
+                self.git(),
+                &context.workspace_inputs,
+            )?;
+            self.acquire_in_place_git_claims(workspace.id, &context.workspace_inputs)
+                .await?;
+        }
 
         let workspace_dir = if let Some(container_ref) = &workspace.container_ref {
             PathBuf::from(container_ref)
@@ -1252,34 +1795,52 @@ impl ContainerService for LocalContainerService {
             WorkspaceManager::get_workspace_base_dir().join(&workspace_dir_name)
         };
 
-        WorkspaceManager::ensure_workspace_exists(
-            &workspace_dir,
-            &workspace_inputs,
-            &workspace.branch,
-        )
-        .await
-        .map_err(Self::map_workspace_manager_error)?;
-
-        if workspace.container_ref.is_none() {
-            Workspace::update_container_ref(
-                &self.db.pool,
-                workspace.id,
-                &workspace_dir.to_string_lossy(),
+        let result = async {
+            provision_workspace_for_mode(
+                WorkspaceProvisioningAction::EnsureExists,
+                workspace.workspace_mode,
+                &context.sources,
+                &workspace_dir,
+                &context.workspace_inputs,
+                &workspace.branch,
             )
             .await?;
+
+            if workspace.workspace_mode == WorkspaceMode::InPlaceGit {
+                self.sync_in_place_git_workspace_repos(workspace.id, &context.workspace_inputs)
+                    .await?;
+            }
+
+            if workspace.container_ref.is_none() {
+                Workspace::update_container_ref(
+                    &self.db.pool,
+                    workspace.id,
+                    &workspace_dir.to_string_lossy(),
+                )
+                .await?;
+            }
+
+            if workspace.worktree_deleted {
+                Workspace::clear_worktree_deleted(&self.db.pool, workspace.id).await?;
+            }
+
+            self.copy_files_and_images(&workspace_dir, workspace)
+                .await?;
+            Self::create_workspace_config_files(&workspace_dir, &context.repositories).await?;
+
+            Ok::<String, ContainerError>(workspace_dir.to_string_lossy().to_string())
         }
+        .await;
 
-        if workspace.worktree_deleted {
-            Workspace::clear_worktree_deleted(&self.db.pool, workspace.id).await?;
+        match result {
+            Ok(container_ref) => Ok(container_ref),
+            Err(err) => {
+                if workspace.workspace_mode == WorkspaceMode::InPlaceGit {
+                    let _ = release_in_place_git_claims_for_workspace(&self.db, workspace).await;
+                }
+                Err(err)
+            }
         }
-
-        // Copy project files and images (fast no-op if already exist)
-        self.copy_files_and_images(&workspace_dir, workspace)
-            .await?;
-
-        Self::create_workspace_config_files(&workspace_dir, &repositories).await?;
-
-        Ok(workspace_dir.to_string_lossy().to_string())
     }
 
     async fn is_container_clean(&self, workspace: &Workspace) -> Result<bool, ContainerError> {
@@ -1467,6 +2028,10 @@ impl ContainerService for LocalContainerService {
         Ok(())
     }
 
+    async fn after_workspace_stopped(&self, workspace: &Workspace) -> Result<(), ContainerError> {
+        release_in_place_git_claims_for_workspace(&self.db, workspace).await
+    }
+
     async fn stream_diff(
         &self,
         workspace: &Workspace,
@@ -1633,5 +2198,820 @@ fn success_exit_status() -> std::process::ExitStatus {
     {
         use std::os::windows::process::ExitStatusExt;
         ExitStatusExt::from_raw(0)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{
+        fs,
+        path::{Path, PathBuf},
+        str::FromStr,
+    };
+
+    use db::{
+        DBService,
+        models::{
+            repo::Repo as DbRepo,
+            requests::WorkspaceSourceInput,
+            workspace::{CreateWorkspace, Workspace as DbWorkspace, WorkspaceMode},
+            workspace_repo_claim::{CreateWorkspaceRepoClaim, WorkspaceRepoClaim},
+        },
+    };
+    use git::GitService;
+    use serde_json::json;
+    use sqlx::{ConnectOptions, SqlitePool, sqlite::SqliteConnectOptions};
+    use tokio::runtime::Builder;
+    use uuid::Uuid;
+    use workspace_manager::WorkspaceManager;
+
+    use super::{
+        ContainerError, Repo, RepoWorkspaceInput, WorkspaceProvisioningAction,
+        cleanup_in_place_workspace_root, provision_workspace_for_mode,
+        release_in_place_git_claims_for_workspace, resolve_provisioning_sources,
+    };
+
+    #[cfg(unix)]
+    fn symlink_dir(src: &Path, dst: &Path) {
+        std::os::unix::fs::symlink(src, dst).unwrap();
+    }
+
+    fn run_async_test<F>(future: F)
+    where
+        F: std::future::Future<Output = ()>,
+    {
+        Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap()
+            .block_on(future);
+    }
+
+    async fn test_pool() -> SqlitePool {
+        let db_path = std::env::temp_dir().join(format!(
+            "local-deployment-in-place-git-tests-{}.sqlite",
+            Uuid::new_v4()
+        ));
+        let database_url = format!("sqlite://{}", db_path.to_string_lossy());
+
+        let options = SqliteConnectOptions::from_str(&database_url)
+            .unwrap()
+            .create_if_missing(true)
+            .disable_statement_logging();
+
+        let pool = SqlitePool::connect_with(options).await.unwrap();
+        sqlx::query("PRAGMA foreign_keys = ON")
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::migrate!("../db/migrations").run(&pool).await.unwrap();
+        pool
+    }
+
+    fn test_repo(path: &Path, name: &str) -> Repo {
+        serde_json::from_value(json!({
+            "id": Uuid::new_v4(),
+            "path": path,
+            "name": name,
+            "display_name": name,
+            "setup_script": null,
+            "cleanup_script": null,
+            "archive_script": null,
+            "copy_files": null,
+            "parallel_setup_script": false,
+            "dev_server_script": null,
+            "default_target_branch": "main",
+            "default_working_dir": null,
+            "created_at": "2026-01-01T00:00:00Z",
+            "updated_at": "2026-01-01T00:00:00Z"
+        }))
+        .unwrap()
+    }
+
+    async fn create_workspace_record(
+        pool: &SqlitePool,
+        label: &str,
+        mode: WorkspaceMode,
+    ) -> DbWorkspace {
+        let workspace_id = Uuid::new_v4();
+        DbWorkspace::create(
+            pool,
+            &CreateWorkspace {
+                branch: format!("branch-{label}-{workspace_id}"),
+                workspace_mode: mode,
+                name: Some(format!("Workspace {label}")),
+            },
+            workspace_id,
+        )
+        .await
+        .unwrap()
+    }
+
+    async fn create_repo_record(pool: &SqlitePool, name: &str) -> DbRepo {
+        let repo_path = std::env::temp_dir().join(format!(
+            "local-deployment-claim-repo-{}-{}",
+            name,
+            Uuid::new_v4()
+        ));
+        DbRepo::find_or_create(pool, Path::new(&repo_path), name)
+            .await
+            .unwrap()
+    }
+
+    fn create_branch(git: &GitService, repo_path: &Path, branch: &str, target_branch: &str) {
+        git.create_branch(repo_path, branch, target_branch).unwrap();
+    }
+
+    #[test]
+    fn provision_workspace_for_mode_rejects_non_git_sources_for_in_place_git() {
+        run_async_test(async {
+            let err = provision_workspace_for_mode(
+                WorkspaceProvisioningAction::Create,
+                WorkspaceMode::InPlaceGit,
+                &[WorkspaceSourceInput::Directory {
+                    path: "/tmp/not-a-git-repo".to_string(),
+                    display_name: Some("not-a-git-repo".to_string()),
+                }],
+                Path::new("/tmp/unused"),
+                &[],
+                "workspace-branch",
+            )
+            .await
+            .unwrap_err();
+
+            assert!(matches!(
+                err,
+                ContainerError::Other(_) | ContainerError::GitServiceError(_)
+            ));
+        });
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn provision_workspace_for_mode_creates_in_place_directory_workspace_root() {
+        run_async_test(async {
+            let source_dir = std::env::temp_dir().join(format!(
+                "local-deployment-directory-source-{}",
+                Uuid::new_v4()
+            ));
+            fs::create_dir_all(&source_dir).unwrap();
+            fs::write(source_dir.join("README.md"), "hello\n").unwrap();
+
+            let workspace_dir = std::env::temp_dir().join(format!(
+                "local-deployment-directory-workspace-{}",
+                Uuid::new_v4()
+            ));
+
+            let provisioned_path = provision_workspace_for_mode(
+                WorkspaceProvisioningAction::Create,
+                WorkspaceMode::InPlaceDirectory,
+                &[WorkspaceSourceInput::Directory {
+                    path: source_dir.to_string_lossy().to_string(),
+                    display_name: Some("non-git-project".to_string()),
+                }],
+                &workspace_dir,
+                &[],
+                "unused-branch",
+            )
+            .await
+            .unwrap();
+
+            assert_eq!(provisioned_path, workspace_dir);
+            let entry = workspace_dir.join("non-git-project");
+            assert!(entry.exists());
+            assert_eq!(
+                fs::read_link(&entry).unwrap(),
+                source_dir.canonicalize().unwrap()
+            );
+
+            let _ = tokio::fs::remove_dir_all(&workspace_dir).await;
+            let _ = tokio::fs::remove_dir_all(&source_dir).await;
+        });
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn provision_workspace_for_mode_canonicalizes_relative_in_place_directory_source() {
+        run_async_test(async {
+            let relative_source = PathBuf::from(format!(
+                "target/local-deployment-relative-directory-source-{}",
+                Uuid::new_v4()
+            ));
+            fs::create_dir_all(&relative_source).unwrap();
+            let canonical_source = relative_source.canonicalize().unwrap();
+
+            let workspace_dir = std::env::temp_dir().join(format!(
+                "local-deployment-relative-directory-workspace-{}",
+                Uuid::new_v4()
+            ));
+
+            let provisioned_path = provision_workspace_for_mode(
+                WorkspaceProvisioningAction::Create,
+                WorkspaceMode::InPlaceDirectory,
+                &[WorkspaceSourceInput::Directory {
+                    path: relative_source.to_string_lossy().to_string(),
+                    display_name: Some("relative-project".to_string()),
+                }],
+                &workspace_dir,
+                &[],
+                "unused-branch",
+            )
+            .await
+            .unwrap();
+
+            assert_eq!(provisioned_path, workspace_dir);
+            let entry = workspace_dir.join("relative-project");
+            assert_eq!(fs::read_link(&entry).unwrap(), canonical_source);
+
+            let _ = tokio::fs::remove_dir_all(&workspace_dir).await;
+            let _ = tokio::fs::remove_dir_all(&relative_source).await;
+        });
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn provision_workspace_for_mode_ensures_in_place_directory_workspace_root_exists() {
+        run_async_test(async {
+            let source_dir = std::env::temp_dir().join(format!(
+                "local-deployment-directory-ensure-source-{}",
+                Uuid::new_v4()
+            ));
+            fs::create_dir_all(&source_dir).unwrap();
+
+            let workspace_dir = std::env::temp_dir().join(format!(
+                "local-deployment-directory-ensure-workspace-{}",
+                Uuid::new_v4()
+            ));
+            let sources = vec![WorkspaceSourceInput::Directory {
+                path: source_dir.to_string_lossy().to_string(),
+                display_name: Some("non-git-project".to_string()),
+            }];
+
+            provision_workspace_for_mode(
+                WorkspaceProvisioningAction::Create,
+                WorkspaceMode::InPlaceDirectory,
+                &sources,
+                &workspace_dir,
+                &[],
+                "unused-branch",
+            )
+            .await
+            .unwrap();
+
+            fs::remove_dir_all(&workspace_dir).unwrap();
+
+            let ensured_path = provision_workspace_for_mode(
+                WorkspaceProvisioningAction::EnsureExists,
+                WorkspaceMode::InPlaceDirectory,
+                &sources,
+                &workspace_dir,
+                &[],
+                "unused-branch",
+            )
+            .await
+            .unwrap();
+
+            assert_eq!(ensured_path, workspace_dir);
+            let entry = workspace_dir.join("non-git-project");
+            assert!(entry.exists());
+            assert_eq!(
+                fs::read_link(&entry).unwrap(),
+                source_dir.canonicalize().unwrap()
+            );
+
+            let _ = tokio::fs::remove_dir_all(&workspace_dir).await;
+            let _ = tokio::fs::remove_dir_all(&source_dir).await;
+        });
+    }
+
+    #[test]
+    fn provision_workspace_for_mode_rejects_missing_directory_source() {
+        run_async_test(async {
+            let err = provision_workspace_for_mode(
+                WorkspaceProvisioningAction::Create,
+                WorkspaceMode::InPlaceDirectory,
+                &[WorkspaceSourceInput::Directory {
+                    path: "/tmp/definitely-missing-directory-workspace".to_string(),
+                    display_name: Some("missing".to_string()),
+                }],
+                Path::new("/tmp/unused"),
+                &[],
+                "unused-branch",
+            )
+            .await
+            .unwrap_err();
+
+            assert!(err.to_string().contains("does not exist"));
+        });
+    }
+
+    #[test]
+    fn provision_workspace_for_mode_rejects_file_source_for_in_place_directory() {
+        run_async_test(async {
+            let source_file = std::env::temp_dir().join(format!(
+                "local-deployment-directory-file-{}",
+                Uuid::new_v4()
+            ));
+            fs::write(&source_file, "not a directory\n").unwrap();
+
+            let err = provision_workspace_for_mode(
+                WorkspaceProvisioningAction::Create,
+                WorkspaceMode::InPlaceDirectory,
+                &[WorkspaceSourceInput::Directory {
+                    path: source_file.to_string_lossy().to_string(),
+                    display_name: Some("file-source".to_string()),
+                }],
+                Path::new("/tmp/unused"),
+                &[],
+                "unused-branch",
+            )
+            .await
+            .unwrap_err();
+
+            assert!(err.to_string().contains("must be a directory"));
+
+            let _ = tokio::fs::remove_file(&source_file).await;
+        });
+    }
+
+    #[test]
+    fn provision_workspace_for_mode_rejects_invalid_in_place_directory_entry_name() {
+        run_async_test(async {
+            let source_dir = std::env::temp_dir().join(format!(
+                "local-deployment-invalid-directory-name-source-{}",
+                Uuid::new_v4()
+            ));
+            fs::create_dir_all(&source_dir).unwrap();
+
+            let err = provision_workspace_for_mode(
+                WorkspaceProvisioningAction::Create,
+                WorkspaceMode::InPlaceDirectory,
+                &[WorkspaceSourceInput::Directory {
+                    path: source_dir.to_string_lossy().to_string(),
+                    display_name: Some("nested/name".to_string()),
+                }],
+                Path::new("/tmp/unused"),
+                &[],
+                "unused-branch",
+            )
+            .await
+            .unwrap_err();
+
+            assert!(err.to_string().contains("single path component"));
+
+            let _ = tokio::fs::remove_dir_all(&source_dir).await;
+        });
+    }
+
+    #[test]
+    fn provision_workspace_for_mode_rejects_blank_display_name_for_in_place_directory() {
+        run_async_test(async {
+            let source_dir = std::env::temp_dir().join(format!(
+                "local-deployment-blank-directory-name-source-{}",
+                Uuid::new_v4()
+            ));
+            fs::create_dir_all(&source_dir).unwrap();
+
+            let err = provision_workspace_for_mode(
+                WorkspaceProvisioningAction::Create,
+                WorkspaceMode::InPlaceDirectory,
+                &[WorkspaceSourceInput::Directory {
+                    path: source_dir.to_string_lossy().to_string(),
+                    display_name: Some("   ".to_string()),
+                }],
+                Path::new("/tmp/unused"),
+                &[],
+                "unused-branch",
+            )
+            .await
+            .unwrap_err();
+
+            assert!(err.to_string().contains("single path component"));
+
+            let _ = tokio::fs::remove_dir_all(&source_dir).await;
+        });
+    }
+
+    #[test]
+    fn provision_workspace_for_mode_creates_git_worktree_workspace() {
+        run_async_test(async {
+            let git = GitService::new();
+            let repo_path = std::env::temp_dir().join(format!(
+                "local-deployment-provision-repo-{}",
+                Uuid::new_v4()
+            ));
+            git.initialize_repo_with_main_branch(&repo_path).unwrap();
+            let repo = test_repo(&repo_path, "workspace-repo");
+            let workspace_dir = std::env::temp_dir().join(format!(
+                "local-deployment-provision-workspace-{}",
+                Uuid::new_v4()
+            ));
+
+            let provisioned_path = provision_workspace_for_mode(
+                WorkspaceProvisioningAction::Create,
+                WorkspaceMode::GitWorktree,
+                &[WorkspaceSourceInput::GitRepo {
+                    repo_id: repo.id,
+                    target_branch: "main".to_string(),
+                }],
+                &workspace_dir,
+                &[RepoWorkspaceInput::new(repo.clone(), "main".to_string())],
+                "workspace-branch",
+            )
+            .await
+            .unwrap();
+
+            assert_eq!(provisioned_path, workspace_dir);
+            assert!(workspace_dir.join(&repo.name).exists());
+
+            let _ = tokio::fs::remove_dir_all(&workspace_dir).await;
+            let _ = tokio::fs::remove_dir_all(&repo_path).await;
+        });
+    }
+
+    #[test]
+    fn provision_workspace_for_mode_ensures_git_worktree_workspace_exists() {
+        run_async_test(async {
+            let git = GitService::new();
+            let repo_path = std::env::temp_dir()
+                .join(format!("local-deployment-ensure-repo-{}", Uuid::new_v4()));
+            git.initialize_repo_with_main_branch(&repo_path).unwrap();
+            let repo = test_repo(&repo_path, "workspace-repo");
+            let workspace_dir = std::env::temp_dir().join(format!(
+                "local-deployment-ensure-workspace-{}",
+                Uuid::new_v4()
+            ));
+            let sources = vec![WorkspaceSourceInput::GitRepo {
+                repo_id: repo.id,
+                target_branch: "main".to_string(),
+            }];
+
+            let ensured_path = provision_workspace_for_mode(
+                WorkspaceProvisioningAction::EnsureExists,
+                WorkspaceMode::GitWorktree,
+                &sources,
+                &workspace_dir,
+                &[RepoWorkspaceInput::new(repo.clone(), "main".to_string())],
+                "workspace-branch",
+            )
+            .await
+            .unwrap();
+
+            assert_eq!(ensured_path, workspace_dir);
+            assert!(workspace_dir.join(&repo.name).exists());
+            assert_eq!(sources.len(), 1);
+
+            let _ = tokio::fs::remove_dir_all(&workspace_dir).await;
+            let _ = tokio::fs::remove_dir_all(&repo_path).await;
+        });
+    }
+
+    #[test]
+    fn resolve_provisioning_sources_falls_back_to_legacy_git_repos_for_git_worktree() {
+        let repo = test_repo(Path::new("/tmp/fallback-repo"), "fallback-repo");
+        let sources = resolve_provisioning_sources(
+            WorkspaceMode::GitWorktree,
+            vec![],
+            &[RepoWorkspaceInput::new(repo.clone(), "main".to_string())],
+        )
+        .unwrap();
+
+        assert_eq!(
+            sources,
+            vec![WorkspaceSourceInput::GitRepo {
+                repo_id: repo.id,
+                target_branch: "main".to_string(),
+            }]
+        );
+    }
+
+    #[test]
+    fn provision_workspace_for_mode_rejects_dirty_in_place_git_repo() {
+        run_async_test(async {
+            let git = GitService::new();
+            let repo_path = std::env::temp_dir().join(format!(
+                "local-deployment-dirty-in-place-repo-{}",
+                Uuid::new_v4()
+            ));
+            git.initialize_repo_with_main_branch(&repo_path).unwrap();
+            fs::write(repo_path.join("untracked.txt"), "dirty\n").unwrap();
+
+            let repo = test_repo(&repo_path, "workspace-repo");
+            let workspace_dir = std::env::temp_dir().join(format!(
+                "local-deployment-dirty-in-place-workspace-{}",
+                Uuid::new_v4()
+            ));
+
+            let err = provision_workspace_for_mode(
+                WorkspaceProvisioningAction::Create,
+                WorkspaceMode::InPlaceGit,
+                &[WorkspaceSourceInput::GitRepo {
+                    repo_id: repo.id,
+                    target_branch: "main".to_string(),
+                }],
+                &workspace_dir,
+                &[RepoWorkspaceInput::new(repo.clone(), "main".to_string())],
+                "workspace-branch",
+            )
+            .await
+            .unwrap_err();
+
+            assert!(matches!(err, ContainerError::GitServiceError(_)));
+
+            let _ = tokio::fs::remove_dir_all(&workspace_dir).await;
+            let _ = tokio::fs::remove_dir_all(&repo_path).await;
+        });
+    }
+
+    #[test]
+    fn provision_workspace_for_mode_rejects_missing_local_target_branch() {
+        run_async_test(async {
+            let git = GitService::new();
+            let repo_path = std::env::temp_dir().join(format!(
+                "local-deployment-missing-target-repo-{}",
+                Uuid::new_v4()
+            ));
+            git.initialize_repo_with_main_branch(&repo_path).unwrap();
+
+            let repo = test_repo(&repo_path, "workspace-repo");
+            let workspace_dir = std::env::temp_dir().join(format!(
+                "local-deployment-missing-target-workspace-{}",
+                Uuid::new_v4()
+            ));
+
+            let err = provision_workspace_for_mode(
+                WorkspaceProvisioningAction::Create,
+                WorkspaceMode::InPlaceGit,
+                &[WorkspaceSourceInput::GitRepo {
+                    repo_id: repo.id,
+                    target_branch: "missing".to_string(),
+                }],
+                &workspace_dir,
+                &[RepoWorkspaceInput::new(repo.clone(), "missing".to_string())],
+                "workspace-branch",
+            )
+            .await
+            .unwrap_err();
+
+            assert!(matches!(
+                err,
+                ContainerError::GitServiceError(git::GitServiceError::BranchNotFound(branch))
+                    if branch == "missing"
+            ));
+
+            let _ = tokio::fs::remove_dir_all(&workspace_dir).await;
+            let _ = tokio::fs::remove_dir_all(&repo_path).await;
+        });
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn provision_workspace_for_mode_creates_symlinked_in_place_git_workspace_root() {
+        run_async_test(async {
+            let git = GitService::new();
+            let repo_path = std::env::temp_dir().join(format!(
+                "local-deployment-symlink-in-place-repo-{}",
+                Uuid::new_v4()
+            ));
+            git.initialize_repo_with_main_branch(&repo_path).unwrap();
+            create_branch(&git, &repo_path, "target", "main");
+
+            let repo = test_repo(&repo_path, "workspace-repo");
+            let workspace_dir = std::env::temp_dir().join(format!(
+                "local-deployment-symlink-in-place-workspace-{}",
+                Uuid::new_v4()
+            ));
+
+            let provisioned_path = provision_workspace_for_mode(
+                WorkspaceProvisioningAction::Create,
+                WorkspaceMode::InPlaceGit,
+                &[WorkspaceSourceInput::GitRepo {
+                    repo_id: repo.id,
+                    target_branch: "target".to_string(),
+                }],
+                &workspace_dir,
+                &[RepoWorkspaceInput::new(repo.clone(), "target".to_string())],
+                "workspace-branch",
+            )
+            .await
+            .unwrap();
+
+            assert_eq!(provisioned_path, workspace_dir);
+            let repo_link = workspace_dir.join(&repo.name);
+            assert!(
+                std::fs::symlink_metadata(&repo_link)
+                    .unwrap()
+                    .file_type()
+                    .is_symlink()
+            );
+
+            let _ = tokio::fs::remove_dir_all(&workspace_dir).await;
+            let _ = tokio::fs::remove_dir_all(&repo_path).await;
+        });
+    }
+
+    #[test]
+    fn provision_workspace_for_mode_fails_when_repo_entry_path_is_real_directory() {
+        run_async_test(async {
+            let git = GitService::new();
+            let repo_path = std::env::temp_dir().join(format!(
+                "local-deployment-collision-repo-{}",
+                Uuid::new_v4()
+            ));
+            git.initialize_repo_with_main_branch(&repo_path).unwrap();
+            create_branch(&git, &repo_path, "target", "main");
+
+            let repo = test_repo(&repo_path, "workspace-repo");
+            let workspace_dir = std::env::temp_dir().join(format!(
+                "local-deployment-collision-workspace-{}",
+                Uuid::new_v4()
+            ));
+            fs::create_dir_all(workspace_dir.join(&repo.name)).unwrap();
+
+            let err = provision_workspace_for_mode(
+                WorkspaceProvisioningAction::Create,
+                WorkspaceMode::InPlaceGit,
+                &[WorkspaceSourceInput::GitRepo {
+                    repo_id: repo.id,
+                    target_branch: "target".to_string(),
+                }],
+                &workspace_dir,
+                &[RepoWorkspaceInput::new(repo.clone(), "target".to_string())],
+                "workspace-branch",
+            )
+            .await
+            .unwrap_err();
+
+            assert!(matches!(err, ContainerError::Other(_)));
+
+            let _ = tokio::fs::remove_dir_all(&workspace_dir).await;
+            let _ = tokio::fs::remove_dir_all(&repo_path).await;
+        });
+    }
+
+    #[test]
+    fn provision_workspace_for_mode_is_all_or_nothing_for_multiple_repos() {
+        run_async_test(async {
+            let git = GitService::new();
+            let clean_repo_path = std::env::temp_dir().join(format!(
+                "local-deployment-clean-multi-repo-{}",
+                Uuid::new_v4()
+            ));
+            git.initialize_repo_with_main_branch(&clean_repo_path)
+                .unwrap();
+            create_branch(&git, &clean_repo_path, "target", "main");
+
+            let dirty_repo_path = std::env::temp_dir().join(format!(
+                "local-deployment-dirty-multi-repo-{}",
+                Uuid::new_v4()
+            ));
+            git.initialize_repo_with_main_branch(&dirty_repo_path)
+                .unwrap();
+            create_branch(&git, &dirty_repo_path, "target", "main");
+            fs::write(dirty_repo_path.join("untracked.txt"), "dirty\n").unwrap();
+
+            let clean_repo = test_repo(&clean_repo_path, "clean-repo");
+            let dirty_repo = test_repo(&dirty_repo_path, "dirty-repo");
+            let workspace_dir = std::env::temp_dir().join(format!(
+                "local-deployment-multi-workspace-{}",
+                Uuid::new_v4()
+            ));
+
+            let err = provision_workspace_for_mode(
+                WorkspaceProvisioningAction::Create,
+                WorkspaceMode::InPlaceGit,
+                &[
+                    WorkspaceSourceInput::GitRepo {
+                        repo_id: clean_repo.id,
+                        target_branch: "target".to_string(),
+                    },
+                    WorkspaceSourceInput::GitRepo {
+                        repo_id: dirty_repo.id,
+                        target_branch: "target".to_string(),
+                    },
+                ],
+                &workspace_dir,
+                &[
+                    RepoWorkspaceInput::new(clean_repo.clone(), "target".to_string()),
+                    RepoWorkspaceInput::new(dirty_repo.clone(), "target".to_string()),
+                ],
+                "workspace-branch",
+            )
+            .await
+            .unwrap_err();
+
+            assert!(matches!(err, ContainerError::GitServiceError(_)));
+            assert!(!workspace_dir.exists() || workspace_dir.read_dir().unwrap().next().is_none());
+
+            let _ = tokio::fs::remove_dir_all(&workspace_dir).await;
+            let _ = tokio::fs::remove_dir_all(&clean_repo_path).await;
+            let _ = tokio::fs::remove_dir_all(&dirty_repo_path).await;
+        });
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn ensure_container_exists_recreates_missing_repo_symlink() {
+        run_async_test(async {
+            let git = GitService::new();
+            let repo_path = std::env::temp_dir().join(format!(
+                "local-deployment-recreate-symlink-repo-{}",
+                Uuid::new_v4()
+            ));
+            git.initialize_repo_with_main_branch(&repo_path).unwrap();
+            create_branch(&git, &repo_path, "target", "main");
+
+            let repo = test_repo(&repo_path, "workspace-repo");
+            let workspace_dir = std::env::temp_dir().join(format!(
+                "local-deployment-recreate-symlink-workspace-{}",
+                Uuid::new_v4()
+            ));
+            fs::create_dir_all(&workspace_dir).unwrap();
+            symlink_dir(&repo_path, &workspace_dir.join(&repo.name));
+            fs::remove_file(workspace_dir.join(&repo.name)).unwrap();
+
+            let ensured_path = provision_workspace_for_mode(
+                WorkspaceProvisioningAction::EnsureExists,
+                WorkspaceMode::InPlaceGit,
+                &[WorkspaceSourceInput::GitRepo {
+                    repo_id: repo.id,
+                    target_branch: "target".to_string(),
+                }],
+                &workspace_dir,
+                &[RepoWorkspaceInput::new(repo.clone(), "target".to_string())],
+                "workspace-branch",
+            )
+            .await
+            .unwrap();
+
+            assert_eq!(ensured_path, workspace_dir);
+            let repo_link = workspace_dir.join(&repo.name);
+            assert!(
+                std::fs::symlink_metadata(&repo_link)
+                    .unwrap()
+                    .file_type()
+                    .is_symlink()
+            );
+
+            let _ = tokio::fs::remove_dir_all(&workspace_dir).await;
+            let _ = tokio::fs::remove_dir_all(&repo_path).await;
+        });
+    }
+
+    #[test]
+    fn release_in_place_git_claims_for_workspace_removes_claims() {
+        run_async_test(async {
+            let pool = test_pool().await;
+            let workspace =
+                create_workspace_record(&pool, "release-claims", WorkspaceMode::InPlaceGit).await;
+            let repo = create_repo_record(&pool, "repo").await;
+
+            WorkspaceRepoClaim::create_many(
+                &pool,
+                workspace.id,
+                &[CreateWorkspaceRepoClaim { repo_id: repo.id }],
+            )
+            .await
+            .unwrap();
+
+            let db = DBService { pool: pool.clone() };
+
+            release_in_place_git_claims_for_workspace(&db, &workspace)
+                .await
+                .unwrap();
+
+            let claims = WorkspaceRepoClaim::find_by_workspace_id(&pool, workspace.id)
+                .await
+                .unwrap();
+            assert!(claims.is_empty());
+        });
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn cleanup_workspace_for_in_place_git_removes_symlinks_but_not_real_repo_dirs() {
+        run_async_test(async {
+            let real_repo_dir =
+                std::env::temp_dir().join(format!("local-deployment-real-repo-{}", Uuid::new_v4()));
+            fs::create_dir_all(&real_repo_dir).unwrap();
+            fs::write(real_repo_dir.join("README.md"), "repo\n").unwrap();
+
+            let workspace_dir = WorkspaceManager::get_workspace_base_dir().join(format!(
+                "local-deployment-cleanup-workspace-{}",
+                Uuid::new_v4()
+            ));
+            fs::create_dir_all(&workspace_dir).unwrap();
+            symlink_dir(&real_repo_dir, &workspace_dir.join("repo"));
+
+            cleanup_in_place_workspace_root(&workspace_dir)
+                .await
+                .unwrap();
+
+            assert!(!workspace_dir.exists());
+            assert!(real_repo_dir.exists());
+            assert!(real_repo_dir.join("README.md").exists());
+
+            let _ = tokio::fs::remove_dir_all(&real_repo_dir).await;
+        });
     }
 }

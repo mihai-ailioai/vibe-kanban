@@ -1,5 +1,11 @@
 import type { CreateModeInitialState } from '@/shared/types/createMode';
-import type { DraftWorkspaceData } from 'shared/types';
+import type {
+  CreateAndStartWorkspaceRequest,
+  DraftWorkspaceData,
+  ExecutorConfig,
+  WorkspaceMode,
+  WorkspaceSourceInput,
+} from 'shared/types';
 import { ScratchType } from 'shared/types';
 import type { AppRuntime } from '@/shared/hooks/useAppRuntime';
 import { scratchApi } from '@/shared/lib/api';
@@ -20,8 +26,52 @@ interface LinkedIssueSource {
   title: string;
 }
 
+export interface RepoSelectionInput {
+  repo_id: string;
+  target_branch: string;
+}
+
+export type DirectoryWorkspaceSourceInput = Extract<
+  WorkspaceSourceInput,
+  { type: 'directory' }
+>;
+
+interface LinkedIssueRequestInput {
+  issueId: string;
+  remoteProjectId: string;
+}
+
 export const DEFAULT_WORKSPACE_CREATE_DRAFT_ID =
   '00000000-0000-0000-0000-000000000001';
+
+export const DEFAULT_CREATE_MODE_WORKSPACE_MODE: WorkspaceMode = 'git_worktree';
+
+export function toGitRepoWorkspaceSources(
+  repos: RepoSelectionInput[]
+): Extract<WorkspaceSourceInput, { type: 'git_repo' }>[] {
+  return repos.map((repo) => ({
+    type: 'git_repo',
+    repo_id: repo.repo_id,
+    target_branch: repo.target_branch,
+  }));
+}
+
+export function buildWorkspaceSourcesForMode(args: {
+  workspaceMode: WorkspaceMode;
+  repos?: RepoSelectionInput[];
+  directorySource?: DirectoryWorkspaceSourceInput | null;
+  workspaceSources?: WorkspaceSourceInput[] | null;
+}): WorkspaceSourceInput[] {
+  if (args.workspaceSources) {
+    return args.workspaceSources;
+  }
+
+  if (args.workspaceMode === 'in_place_directory') {
+    return args.directorySource ? [args.directorySource] : [];
+  }
+
+  return toGitRepoWorkspaceSources(args.repos ?? []);
+}
 
 export function buildWorkspaceCreatePrompt(
   title: string | null | undefined,
@@ -57,6 +107,13 @@ export function buildWorkspaceCreateInitialState(args: {
 }): CreateModeInitialState {
   return {
     initialPrompt: args.prompt,
+    workspaceMode: DEFAULT_CREATE_MODE_WORKSPACE_MODE,
+    workspaceSources: toGitRepoWorkspaceSources(
+      args.defaults?.preferredRepos?.map((repo) => ({
+        repo_id: repo.repo_id,
+        target_branch: repo.target_branch ?? '',
+      })) ?? []
+    ),
     preferredRepos: args.defaults?.preferredRepos ?? null,
     project_id: args.defaults?.project_id ?? null,
     linkedIssue: args.linkedIssue ?? null,
@@ -77,13 +134,21 @@ export function buildLocalWorkspaceIdSet(
 export function toDraftWorkspaceData(
   initialState: CreateModeInitialState
 ): DraftWorkspaceData {
+  const workspaceMode =
+    initialState.workspaceMode ?? DEFAULT_CREATE_MODE_WORKSPACE_MODE;
+
   return {
     message: initialState.initialPrompt ?? '',
-    repos:
-      initialState.preferredRepos?.map((repo) => ({
-        repo_id: repo.repo_id,
-        target_branch: repo.target_branch ?? '',
-      })) ?? [],
+    workspace_mode: workspaceMode,
+    sources: buildWorkspaceSourcesForMode({
+      workspaceMode,
+      repos:
+        initialState.preferredRepos?.map((repo) => ({
+          repo_id: repo.repo_id,
+          target_branch: repo.target_branch ?? '',
+        })) ?? [],
+      workspaceSources: initialState.workspaceSources ?? null,
+    }),
     executor_config: initialState.executorConfig ?? null,
     linked_issue: initialState.linkedIssue
       ? {
@@ -94,6 +159,31 @@ export function toDraftWorkspaceData(
         }
       : null,
     attachments: [],
+  };
+}
+
+export function buildCreateWorkspaceRequest(args: {
+  name: string | null;
+  prompt: string;
+  executorConfig: ExecutorConfig;
+  workspaceMode: WorkspaceMode;
+  sources: WorkspaceSourceInput[];
+  linkedIssue?: LinkedIssueRequestInput | null;
+  attachmentIds: string[];
+}): CreateAndStartWorkspaceRequest {
+  return {
+    name: args.name,
+    prompt: args.prompt,
+    executor_config: args.executorConfig,
+    workspace_mode: args.workspaceMode,
+    sources: args.sources,
+    linked_issue: args.linkedIssue
+      ? {
+          remote_project_id: args.linkedIssue.remoteProjectId,
+          issue_id: args.linkedIssue.issueId,
+        }
+      : null,
+    attachment_ids: args.attachmentIds,
   };
 }
 

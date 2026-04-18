@@ -6,7 +6,7 @@ use axum::{
 };
 use db::models::{
     coding_agent_turn::CodingAgentTurn,
-    execution_process::{ExecutionProcess, ExecutionProcessStatus},
+    execution_process::ExecutionProcess,
     workspace::{Workspace, WorkspaceError},
 };
 use deployment::Deployment;
@@ -16,6 +16,7 @@ use sqlx::Error as SqlxError;
 use utils::response::ApiResponse;
 use workspace_manager::WorkspaceManager;
 
+use super::capabilities::workspace_capabilities;
 use crate::{DeploymentImpl, error::ApiError};
 
 #[derive(Debug, Deserialize)]
@@ -66,8 +67,11 @@ pub async fn update_workspace(
         let ws = updated.clone();
         let name = request.name.clone();
         let archived = request.archived;
-        let stats =
-            diff_stream::compute_diff_stats(&deployment.db().pool, deployment.git(), &ws).await;
+        let stats = if workspace_capabilities(&ws).supports_git_read {
+            diff_stream::compute_diff_stats(&deployment.db().pool, deployment.git(), &ws).await
+        } else {
+            None
+        };
         tokio::spawn(async move {
             remote_sync::sync_workspace_to_remote(
                 &client,
@@ -96,16 +100,16 @@ pub async fn get_first_user_message(
     Ok(ResponseJson(ApiResponse::success(message)))
 }
 
-pub async fn delete_workspace(
-    Extension(workspace): Extension<Workspace>,
-    State(deployment): State<DeploymentImpl>,
-    Query(query): Query<DeleteWorkspaceQuery>,
-) -> Result<(StatusCode, ResponseJson<ApiResponse<()>>), ApiError> {
-    let pool = &deployment.db().pool;
-    let workspace_manager = deployment.workspace_manager();
-    let workspace_id = workspace.id;
-
-    if ExecutionProcess::has_running_non_dev_server_processes_for_workspace(pool, workspace_id)
+async fn stop_workspace_for_delete<F, Fut>(
+    pool: &sqlx::SqlitePool,
+    workspace: &Workspace,
+    stop_workspace: F,
+) -> Result<(), ApiError>
+where
+    F: FnOnce(Workspace, bool) -> Fut,
+    Fut: std::future::Future<Output = ()>,
+{
+    if ExecutionProcess::has_running_non_dev_server_processes_for_workspace(pool, workspace.id)
         .await?
     {
         return Err(ApiError::Conflict(
@@ -114,29 +118,31 @@ pub async fn delete_workspace(
         ));
     }
 
-    let dev_servers =
-        ExecutionProcess::find_running_dev_servers_by_workspace(pool, workspace_id).await?;
+    stop_workspace(workspace.clone(), true).await;
+    Ok(())
+}
 
-    for dev_server in dev_servers {
-        tracing::info!(
-            "Stopping dev server {} before deleting workspace {}",
-            dev_server.id,
-            workspace_id
-        );
+pub async fn delete_workspace(
+    Extension(workspace): Extension<Workspace>,
+    State(deployment): State<DeploymentImpl>,
+    Query(query): Query<DeleteWorkspaceQuery>,
+) -> Result<(StatusCode, ResponseJson<ApiResponse<()>>), ApiError> {
+    let pool = deployment.db().pool.clone();
+    let workspace_manager = deployment.workspace_manager();
+    let workspace_id = workspace.id;
+    let deployment_for_stop = deployment.clone();
 
-        if let Err(e) = deployment
-            .container()
-            .stop_execution(&dev_server, ExecutionProcessStatus::Killed)
-            .await
-        {
-            tracing::error!(
-                "Failed to stop dev server {} for workspace {}: {}",
-                dev_server.id,
-                workspace_id,
-                e
-            );
-        }
-    }
+    stop_workspace_for_delete(
+        &pool,
+        &workspace,
+        |workspace, include_dev_server| async move {
+            deployment_for_stop
+                .container()
+                .try_stop(&workspace, include_dev_server)
+                .await;
+        },
+    )
+    .await?;
 
     let managed_workspace = workspace_manager.load_managed_workspace(workspace).await?;
     let deletion_context = managed_workspace.prepare_deletion_context().await?;
@@ -190,4 +196,182 @@ pub async fn mark_seen(
     let pool = &deployment.db().pool;
     CodingAgentTurn::mark_seen_by_workspace_id(pool, workspace.id).await?;
     Ok(ResponseJson(ApiResponse::success(())))
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{
+        path::Path,
+        str::FromStr,
+        sync::{
+            Arc,
+            atomic::{AtomicBool, Ordering},
+        },
+    };
+
+    use anyhow::anyhow;
+    use db::models::{
+        execution_process::{
+            CreateExecutionProcess, ExecutionProcess, ExecutionProcessRunReason,
+            ExecutionProcessStatus,
+        },
+        repo::Repo,
+        session::{CreateSession, Session},
+        workspace::WorkspaceMode,
+        workspace_repo_claim::{CreateWorkspaceRepoClaim, WorkspaceRepoClaim},
+    };
+    use executors::actions::{
+        ExecutorAction, ExecutorActionType,
+        script::{ScriptContext, ScriptRequest, ScriptRequestLanguage},
+    };
+    use sqlx::{ConnectOptions, SqlitePool, sqlite::SqliteConnectOptions};
+    use uuid::Uuid;
+
+    use super::*;
+
+    async fn test_pool() -> SqlitePool {
+        let db_path = std::env::temp_dir().join(format!(
+            "server-core-delete-tests-{}.sqlite",
+            Uuid::new_v4()
+        ));
+        let database_url = format!("sqlite://{}", db_path.to_string_lossy());
+
+        let options = SqliteConnectOptions::from_str(&database_url)
+            .unwrap()
+            .create_if_missing(true)
+            .disable_statement_logging();
+
+        let pool = SqlitePool::connect_with(options).await.unwrap();
+        sqlx::query("PRAGMA foreign_keys = ON")
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::migrate!("../db/migrations").run(&pool).await.unwrap();
+        pool
+    }
+
+    fn script_action() -> ExecutorAction {
+        ExecutorAction::new(
+            ExecutorActionType::ScriptRequest(ScriptRequest {
+                script: "sleep 60".to_string(),
+                language: ScriptRequestLanguage::Bash,
+                context: ScriptContext::DevServer,
+                working_dir: None,
+            }),
+            None,
+        )
+    }
+
+    #[tokio::test]
+    async fn stop_workspace_for_delete_with_only_dev_servers_uses_try_stop_hook_to_release_claims()
+    {
+        let pool = test_pool().await;
+        let workspace = Workspace::create(
+            &pool,
+            &db::models::workspace::CreateWorkspace {
+                branch: format!("delete-dev-server-{}", Uuid::new_v4()),
+                workspace_mode: WorkspaceMode::InPlaceGit,
+                name: Some("Delete dev server workspace".to_string()),
+            },
+            Uuid::new_v4(),
+        )
+        .await
+        .unwrap();
+
+        let repo_path =
+            std::env::temp_dir().join(format!("server-core-delete-claim-repo-{}", Uuid::new_v4()));
+        let repo = Repo::find_or_create(&pool, Path::new(&repo_path), "claim-repo")
+            .await
+            .unwrap();
+        WorkspaceRepoClaim::create_many(
+            &pool,
+            workspace.id,
+            &[CreateWorkspaceRepoClaim { repo_id: repo.id }],
+        )
+        .await
+        .unwrap();
+
+        let session = Session::create(
+            &pool,
+            &CreateSession {
+                executor: None,
+                name: Some("Delete test session".to_string()),
+            },
+            Uuid::new_v4(),
+            workspace.id,
+        )
+        .await
+        .unwrap();
+
+        let execution = ExecutionProcess::create(
+            &pool,
+            &CreateExecutionProcess {
+                session_id: session.id,
+                executor_action: script_action(),
+                run_reason: ExecutionProcessRunReason::DevServer,
+            },
+            Uuid::new_v4(),
+            &[],
+        )
+        .await
+        .unwrap();
+
+        let after_stop_called = Arc::new(AtomicBool::new(false));
+
+        assert_eq!(
+            WorkspaceRepoClaim::find_by_workspace_id(&pool, workspace.id)
+                .await
+                .unwrap()
+                .len(),
+            1
+        );
+
+        let stop_pool = pool.clone();
+        let stop_after_stop_called = after_stop_called.clone();
+
+        stop_workspace_for_delete(&pool, &workspace, move |workspace, include_dev_server| {
+            let pool = stop_pool.clone();
+            let after_stop_called = stop_after_stop_called.clone();
+            async move {
+                assert!(include_dev_server);
+                let running_dev_servers =
+                    ExecutionProcess::find_running_dev_servers_by_workspace(&pool, workspace.id)
+                        .await
+                        .unwrap();
+
+                for dev_server in running_dev_servers {
+                    ExecutionProcess::update_completion(
+                        &pool,
+                        dev_server.id,
+                        ExecutionProcessStatus::Killed,
+                        None,
+                    )
+                    .await
+                    .unwrap();
+                }
+
+                after_stop_called.store(true, Ordering::SeqCst);
+                WorkspaceRepoClaim::release_for_workspace(&pool, workspace.id)
+                    .await
+                    .unwrap();
+            }
+        })
+        .await
+        .unwrap();
+
+        assert!(after_stop_called.load(Ordering::SeqCst));
+        assert!(
+            WorkspaceRepoClaim::find_by_workspace_id(&pool, workspace.id)
+                .await
+                .unwrap()
+                .is_empty()
+        );
+
+        let execution = ExecutionProcess::find_by_id(&pool, execution.id)
+            .await
+            .unwrap()
+            .ok_or_else(|| anyhow!("missing execution process after stop"))
+            .unwrap();
+        assert_eq!(execution.status, ExecutionProcessStatus::Killed);
+    }
 }

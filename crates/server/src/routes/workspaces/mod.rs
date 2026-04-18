@@ -1,4 +1,5 @@
 pub mod attachments;
+pub mod capabilities;
 pub mod codex_setup;
 pub mod core;
 pub mod create;
@@ -30,6 +31,10 @@ pub fn router(deployment: &DeploymentImpl) -> Router<DeploymentImpl> {
                 .delete(core::delete_workspace),
         )
         .route("/messages/first", get(core::get_first_user_message))
+        .route(
+            "/capabilities",
+            get(capabilities::get_workspace_capabilities),
+        )
         .route("/seen", axum::routing::put(core::mark_seen))
         .nest("/git", git::router())
         .nest("/execution", execution::router())

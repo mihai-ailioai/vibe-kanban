@@ -19,7 +19,7 @@ use db::{
         },
         repo::Repo,
         session::{CreateSession, Session, SessionError},
-        workspace::{Workspace, WorkspaceError},
+        workspace::{Workspace, WorkspaceError, WorkspaceMode},
         workspace_repo::WorkspaceRepo,
     },
 };
@@ -76,12 +76,20 @@ pub enum ContainerError {
     Session(#[from] SessionError),
     #[error(transparent)]
     ExecutionProcess(#[from] ExecutionProcessError),
+    #[error("Workspace mode `{mode}` is not implemented yet")]
+    UnsupportedWorkspaceMode { mode: WorkspaceMode },
     #[error("Io error: {0}")]
     Io(#[from] std::io::Error),
     #[error("Failed to kill process: {0}")]
     KillFailed(std::io::Error),
     #[error(transparent)]
     Other(#[from] AnyhowError), // Catches any unclassified errors
+}
+
+impl ContainerError {
+    pub fn unsupported_workspace_mode(mode: WorkspaceMode) -> Self {
+        Self::UnsupportedWorkspaceMode { mode }
+    }
 }
 
 #[async_trait]
@@ -711,32 +719,68 @@ pub trait ContainerService {
             Err(_) => return,
         };
 
+        let mut stop_succeeded = true;
+
         for session in sessions {
-            if let Ok(processes) =
-                ExecutionProcess::find_by_session_id(&self.db().pool, session.id, false).await
+            let processes = match ExecutionProcess::find_by_session_id(
+                &self.db().pool,
+                session.id,
+                false,
+            )
+            .await
             {
-                for process in processes {
-                    // Skip dev server processes unless explicitly included
-                    if !include_dev_server
-                        && process.run_reason == ExecutionProcessRunReason::DevServer
-                    {
-                        continue;
-                    }
-                    if process.status == ExecutionProcessStatus::Running {
-                        self.stop_execution(&process, ExecutionProcessStatus::Killed)
-                            .await
-                            .unwrap_or_else(|e| {
-                                tracing::debug!(
-                                    "Failed to stop execution process {} for workspace {}: {}",
-                                    process.id,
-                                    workspace.id,
-                                    e
-                                );
-                            });
-                    }
+                Ok(processes) => processes,
+                Err(err) => {
+                    tracing::debug!(
+                        "Failed to load execution processes for session {} in workspace {}: {}",
+                        session.id,
+                        workspace.id,
+                        err
+                    );
+                    stop_succeeded = false;
+                    continue;
+                }
+            };
+
+            for process in processes {
+                // Skip dev server processes unless explicitly included
+                if !include_dev_server && process.run_reason == ExecutionProcessRunReason::DevServer
+                {
+                    continue;
+                }
+                if process.status == ExecutionProcessStatus::Running
+                    && let Err(e) = self
+                        .stop_execution(&process, ExecutionProcessStatus::Killed)
+                        .await
+                {
+                    tracing::debug!(
+                        "Failed to stop execution process {} for workspace {}: {}",
+                        process.id,
+                        workspace.id,
+                        e
+                    );
+                    stop_succeeded = false;
                 }
             }
         }
+
+        if !stop_succeeded {
+            return;
+        }
+
+        self.after_workspace_stopped(workspace)
+            .await
+            .unwrap_or_else(|e| {
+                tracing::debug!(
+                    "Failed to run post-stop workspace hook for workspace {}: {}",
+                    workspace.id,
+                    e
+                );
+            });
+    }
+
+    async fn after_workspace_stopped(&self, _workspace: &Workspace) -> Result<(), ContainerError> {
+        Ok(())
     }
 
     async fn ensure_container_exists(
@@ -1141,7 +1185,7 @@ pub trait ContainerService {
         // Capture current HEAD per repository as the "before" commit for this execution
         let repositories =
             WorkspaceRepo::find_repos_for_workspace(&self.db().pool, workspace.id).await?;
-        if repositories.is_empty() {
+        if repositories.is_empty() && workspace.workspace_mode != WorkspaceMode::InPlaceDirectory {
             return Err(ContainerError::Other(anyhow!(
                 "Workspace has no repositories configured"
             )));
@@ -1356,5 +1400,316 @@ pub trait ContainerService {
 
         tracing::debug!("Started next action: {:?}", next_action);
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{
+        collections::HashMap,
+        path::{Path, PathBuf},
+        sync::{
+            Arc,
+            atomic::{AtomicBool, Ordering},
+        },
+    };
+
+    use anyhow::anyhow;
+    use async_trait::async_trait;
+    use chrono::Utc;
+    use db::{
+        DBService,
+        models::{
+            execution_process::{
+                CreateExecutionProcess, ExecutionProcess, ExecutionProcessRunReason,
+            },
+            session::CreateSession,
+            workspace::{CreateWorkspace, Workspace as DbWorkspace, Workspace, WorkspaceMode},
+        },
+    };
+    use executors::{
+        actions::{
+            ExecutorAction, ExecutorActionType,
+            script::{ScriptContext, ScriptRequest, ScriptRequestLanguage},
+        },
+        profile::ExecutorConfig,
+    };
+    use futures::stream::BoxStream;
+    use git::GitService;
+    use tokio::sync::RwLock;
+    use utils::{log_msg::LogMsg, msg_store::MsgStore};
+    use uuid::Uuid;
+
+    use super::{ContainerError, ContainerRef, ContainerService};
+    use crate::{
+        services::{config::Config, notification::NotificationService},
+        test_support::isolated_test_db,
+    };
+
+    struct MockContainerService {
+        msg_stores: Arc<RwLock<HashMap<Uuid, Arc<MsgStore>>>>,
+        db: DBService,
+        git: GitService,
+        notification_service: NotificationService,
+        after_stop_called: Arc<AtomicBool>,
+        fail_stop_execution: bool,
+    }
+
+    #[async_trait]
+    impl ContainerService for MockContainerService {
+        fn msg_stores(&self) -> &Arc<RwLock<HashMap<Uuid, Arc<MsgStore>>>> {
+            &self.msg_stores
+        }
+
+        fn db(&self) -> &DBService {
+            &self.db
+        }
+
+        fn git(&self) -> &GitService {
+            &self.git
+        }
+
+        fn notification_service(&self) -> &NotificationService {
+            &self.notification_service
+        }
+
+        async fn touch(&self, _workspace: &Workspace) -> Result<(), ContainerError> {
+            Ok(())
+        }
+
+        fn workspace_to_current_dir(&self, _workspace: &Workspace) -> PathBuf {
+            PathBuf::new()
+        }
+
+        async fn ensure_container_exists(
+            &self,
+            _workspace: &Workspace,
+        ) -> Result<ContainerRef, ContainerError> {
+            Ok(String::new())
+        }
+
+        async fn store_db_stream_handle(&self, _id: Uuid, _handle: tokio::task::JoinHandle<()>) {}
+
+        async fn take_db_stream_handle(&self, _id: &Uuid) -> Option<tokio::task::JoinHandle<()>> {
+            None
+        }
+
+        async fn create(&self, _workspace: &Workspace) -> Result<ContainerRef, ContainerError> {
+            let container_ref = "/tmp/mock-workspace".to_string();
+            DbWorkspace::update_container_ref(&self.db.pool, _workspace.id, &container_ref)
+                .await
+                .map_err(ContainerError::from)?;
+            Ok(container_ref)
+        }
+
+        async fn kill_all_running_processes(&self) -> Result<(), ContainerError> {
+            Ok(())
+        }
+
+        async fn delete(&self, _workspace: &Workspace) -> Result<(), ContainerError> {
+            Ok(())
+        }
+
+        async fn is_container_clean(&self, _workspace: &Workspace) -> Result<bool, ContainerError> {
+            Ok(true)
+        }
+
+        async fn start_execution_inner(
+            &self,
+            _workspace: &Workspace,
+            _execution_process: &ExecutionProcess,
+            _executor_action: &executors::actions::ExecutorAction,
+        ) -> Result<(), ContainerError> {
+            Ok(())
+        }
+
+        async fn stop_execution(
+            &self,
+            _execution_process: &ExecutionProcess,
+            _status: db::models::execution_process::ExecutionProcessStatus,
+        ) -> Result<(), ContainerError> {
+            if self.fail_stop_execution {
+                return Err(ContainerError::Other(anyhow!("forced stop failure")));
+            }
+            Ok(())
+        }
+
+        async fn try_commit_changes(
+            &self,
+            _ctx: &db::models::execution_process::ExecutionContext,
+        ) -> Result<bool, ContainerError> {
+            Ok(false)
+        }
+
+        async fn copy_project_files(
+            &self,
+            _source_dir: &Path,
+            _target_dir: &Path,
+            _copy_files: &str,
+        ) -> Result<(), ContainerError> {
+            Ok(())
+        }
+
+        async fn stream_diff(
+            &self,
+            _workspace: &Workspace,
+            _stats_only: bool,
+        ) -> Result<BoxStream<'static, Result<LogMsg, std::io::Error>>, ContainerError> {
+            Ok(Box::pin(futures::stream::empty()))
+        }
+
+        async fn git_branch_prefix(&self) -> String {
+            String::new()
+        }
+
+        async fn after_workspace_stopped(
+            &self,
+            _workspace: &Workspace,
+        ) -> Result<(), ContainerError> {
+            self.after_stop_called.store(true, Ordering::SeqCst);
+            Ok(())
+        }
+    }
+
+    #[tokio::test]
+    async fn try_stop_invokes_after_workspace_stopped_hook() {
+        let msg_stores = Arc::new(RwLock::new(HashMap::new()));
+        let db = isolated_test_db().await;
+        let notification_service =
+            NotificationService::new(Arc::new(RwLock::new(Config::default())));
+        let after_stop_called = Arc::new(AtomicBool::new(false));
+        let service = MockContainerService {
+            msg_stores,
+            db,
+            git: GitService::new(),
+            notification_service,
+            after_stop_called: after_stop_called.clone(),
+            fail_stop_execution: false,
+        };
+
+        let workspace = Workspace {
+            id: Uuid::new_v4(),
+            task_id: None,
+            container_ref: None,
+            branch: "workspace-branch".to_string(),
+            workspace_mode: WorkspaceMode::InPlaceGit,
+            setup_completed_at: None,
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+            archived: false,
+            pinned: false,
+            name: Some("Test workspace".to_string()),
+            worktree_deleted: false,
+        };
+
+        service.try_stop(&workspace, false).await;
+
+        assert!(after_stop_called.load(Ordering::SeqCst));
+    }
+
+    #[tokio::test]
+    async fn try_stop_does_not_invoke_after_workspace_stopped_hook_when_stop_fails() {
+        let msg_stores = Arc::new(RwLock::new(HashMap::new()));
+        let db = isolated_test_db().await;
+        let notification_service =
+            NotificationService::new(Arc::new(RwLock::new(Config::default())));
+        let after_stop_called = Arc::new(AtomicBool::new(false));
+        let service = MockContainerService {
+            msg_stores,
+            db: db.clone(),
+            git: GitService::new(),
+            notification_service,
+            after_stop_called: after_stop_called.clone(),
+            fail_stop_execution: true,
+        };
+
+        let workspace_id = Uuid::new_v4();
+        let workspace = Workspace::create(
+            &db.pool,
+            &CreateWorkspace {
+                branch: format!("workspace-{workspace_id}"),
+                workspace_mode: WorkspaceMode::InPlaceGit,
+                name: Some("Test workspace".to_string()),
+            },
+            workspace_id,
+        )
+        .await
+        .unwrap();
+
+        let session = db::models::session::Session::create(
+            &db.pool,
+            &CreateSession {
+                executor: Some("CODEX".to_string()),
+                name: None,
+            },
+            Uuid::new_v4(),
+            workspace.id,
+        )
+        .await
+        .unwrap();
+
+        ExecutionProcess::create(
+            &db.pool,
+            &CreateExecutionProcess {
+                session_id: session.id,
+                executor_action: ExecutorAction::new(
+                    ExecutorActionType::ScriptRequest(ScriptRequest {
+                        script: "true".to_string(),
+                        language: ScriptRequestLanguage::Bash,
+                        context: ScriptContext::SetupScript,
+                        working_dir: None,
+                    }),
+                    None,
+                ),
+                run_reason: ExecutionProcessRunReason::CodingAgent,
+            },
+            Uuid::new_v4(),
+            &[],
+        )
+        .await
+        .unwrap();
+
+        service.try_stop(&workspace, false).await;
+
+        assert!(!after_stop_called.load(Ordering::SeqCst));
+    }
+
+    #[tokio::test]
+    async fn start_workspace_allows_in_place_directory_without_attached_repos() {
+        let msg_stores = Arc::new(RwLock::new(HashMap::new()));
+        let db = isolated_test_db().await;
+        let notification_service =
+            NotificationService::new(Arc::new(RwLock::new(Config::default())));
+        let service = MockContainerService {
+            msg_stores,
+            db: db.clone(),
+            git: GitService::new(),
+            notification_service,
+            after_stop_called: Arc::new(AtomicBool::new(false)),
+            fail_stop_execution: false,
+        };
+
+        let workspace_id = Uuid::new_v4();
+        let workspace = Workspace::create(
+            &db.pool,
+            &CreateWorkspace {
+                branch: format!("workspace-{workspace_id}"),
+                workspace_mode: WorkspaceMode::InPlaceDirectory,
+                name: Some("Directory workspace".to_string()),
+            },
+            workspace_id,
+        )
+        .await
+        .unwrap();
+
+        let execution = service
+            .start_workspace(
+                &workspace,
+                ExecutorConfig::new("CODEX".parse().unwrap()),
+                "Inspect this directory".to_string(),
+            )
+            .await;
+
+        assert!(execution.is_ok());
     }
 }

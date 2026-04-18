@@ -49,6 +49,10 @@ export function CreateModeProvider({
 
   const value = useMemo<CreateModeContextValue>(
     () => ({
+      workspaceMode: state.workspaceMode,
+      setWorkspaceMode: state.setWorkspaceMode,
+      directorySource: state.directorySource,
+      setDirectorySource: state.setDirectorySource,
       repos: state.repos,
       addRepo: state.addRepo,
       removeRepo: state.removeRepo,
@@ -69,6 +73,10 @@ export function CreateModeProvider({
       setAttachments: state.setAttachments,
     }),
     [
+      state.workspaceMode,
+      state.setWorkspaceMode,
+      state.directorySource,
+      state.setDirectorySource,
       state.repos,
       state.addRepo,
       state.removeRepo,

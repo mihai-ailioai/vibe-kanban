@@ -7,11 +7,15 @@ description: "Add and manage repositories within your workspaces"
 <img style={{maxHeight: "350px"}} src="/images/workspaces-add-repo.png" alt="Repository selection showing selected repo with branch dropdown and list of available repositories" />
 </Frame>
 
-Repositories are the codebases you work with inside a workspace. Each workspace can include one or more repositories, and each repository maintains its own independent git state.
+Repositories are the codebases you work with in Git-capable workspaces. Vibe Kanban uses repository entries in `git_worktree` and `in_place_git` modes, and each selected repository keeps its own independent Git state.
+
+<Note>
+If you create an `in_place_directory` workspace, you pick a folder source instead of adding repository entries. That mode is for plain directories and does not use Git repository configuration.
+</Note>
 
 ## How Repositories Work in Workspaces
 
-When you add a repository to a workspace, Vibe Kanban creates a **git worktree** - a separate working directory linked to your repository.
+When you add a repository in `git_worktree` mode, Vibe Kanban creates a **git worktree** - a separate working directory linked to your repository.
 
 <AccordionGroup>
 <Accordion title="What is a git worktree?">
@@ -27,20 +31,20 @@ A **git worktree** is a git feature that lets you have multiple working director
 </Accordion>
 
 <Accordion title="What is 'independent git state'?">
-Each repository in a workspace has its own:
+Each repository in a Git-capable workspace has its own:
 
 - **Working branch** - The branch where changes are made
 - **Target branch** - The branch you'll merge into
 - **Commit history** - Commits made in this workspace
 - **Staged/unstaged changes** - Independent of other workspaces
 
-This means you can have multiple workspaces modifying the same repository on different branches without conflicts.
+This means you can have multiple Git-capable workspaces modifying the same repository on different branches without conflicts.
 </Accordion>
 </AccordionGroup>
 
 ## Adding Repositories
 
-When creating or editing a workspace, you can add repositories from several sources:
+When creating or editing a `git_worktree` or `in_place_git` workspace, you can add repositories from several sources:
 
 ### Recent Repositories
 
@@ -85,13 +89,13 @@ This creates a new folder with an initialised git repository, ready for use in y
 <img style={{maxHeight: "350px"}} src="/images/workspaces-target-branch.png" alt="Branch dropdown showing search and list of available branches" />
 </Frame>
 
-Each repository in a workspace has a **target branch** - the branch your changes will eventually be merged into (typically `main`, `master`, or `develop`).
+Each repository in a Git-capable workspace has a **target branch** - the branch your changes will eventually be merged into (typically `main`, `master`, or `develop`).
 
 ### Setting the Target Branch
 
 1. Click the branch dropdown next to the repository name
 2. Search or scroll to find the branch you want to target
-3. Select the branch - the workspace creates a working branch based on this target
+3. Select the branch - the workspace sets or creates a working branch based on this target
 
 The dropdown shows:
 - **Current** badge - indicates your current branch
@@ -121,7 +125,7 @@ Changing the target branch may require rebasing your changes. See [Git Operation
 
 ## Working Branch
 
-When you create a workspace, a **working branch** is automatically created for each repository. This is where your changes are made.
+In `git_worktree` mode, a **working branch** is automatically created for each repository. In `in_place_git` mode, you work in the selected checkout's Git repository with the branch flow available for that workspace.
 
 The working branch name is based on your task and branch prefix settings (configured in [General Settings](/settings/general)).
 
@@ -166,7 +170,7 @@ Use clear task descriptions that specify which repositories should be modified t
 
 ## Repository Actions
 
-Access repository-specific actions through the command bar:
+Access repository-specific actions through the command bar in Git-capable workspaces:
 
 | Action | Description |
 |--------|-------------|

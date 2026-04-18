@@ -642,6 +642,27 @@ impl GitCli {
         }
     }
 
+    pub fn checkout_local_branch(
+        &self,
+        repo_path: &Path,
+        branch_name: &str,
+    ) -> Result<(), GitCliError> {
+        self.git(repo_path, ["checkout", branch_name]).map(|_| ())
+    }
+
+    pub fn checkout_new_branch_from(
+        &self,
+        repo_path: &Path,
+        new_branch_name: &str,
+        base_branch_name: &str,
+    ) -> Result<(), GitCliError> {
+        self.git(
+            repo_path,
+            ["checkout", "-b", new_branch_name, base_branch_name],
+        )
+        .map(|_| ())
+    }
+
     /// Checkout base branch, squash-merge from_branch, and commit with message. Returns new HEAD sha.
     pub fn merge_squash_commit(
         &self,

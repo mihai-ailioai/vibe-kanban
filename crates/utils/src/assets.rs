@@ -4,7 +4,9 @@ use rust_embed::RustEmbed;
 const PROJECT_ROOT: &str = env!("CARGO_MANIFEST_DIR");
 
 pub fn asset_dir() -> std::path::PathBuf {
-    let path = if cfg!(debug_assertions) {
+    let path = if let Some(override_path) = std::env::var_os("VK_ASSET_DIR_OVERRIDE") {
+        std::path::PathBuf::from(override_path)
+    } else if cfg!(debug_assertions) {
         std::path::PathBuf::from(PROJECT_ROOT).join("../../dev_assets")
     } else {
         prod_asset_dir_path()
@@ -59,3 +61,48 @@ pub struct SoundAssets;
 #[derive(RustEmbed)]
 #[folder = "../../assets/scripts"]
 pub struct ScriptAssets;
+
+#[cfg(test)]
+mod tests {
+    use std::{
+        sync::{LazyLock, Mutex},
+        time::{SystemTime, UNIX_EPOCH},
+    };
+
+    use super::asset_dir;
+
+    static ASSET_DIR_ENV_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
+
+    #[test]
+    fn asset_dir_uses_override_env_when_present() {
+        let _lock = ASSET_DIR_ENV_LOCK.lock().unwrap();
+        let tempdir = std::env::temp_dir().join(format!(
+            "utils-asset-dir-override-test-{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&tempdir).unwrap();
+        let previous = std::env::var_os("VK_ASSET_DIR_OVERRIDE");
+
+        unsafe {
+            std::env::set_var("VK_ASSET_DIR_OVERRIDE", &tempdir);
+        }
+
+        let path = asset_dir();
+
+        match previous {
+            Some(value) => unsafe {
+                std::env::set_var("VK_ASSET_DIR_OVERRIDE", value);
+            },
+            None => unsafe {
+                std::env::remove_var("VK_ASSET_DIR_OVERRIDE");
+            },
+        }
+
+        let _ = std::fs::remove_dir_all(&tempdir);
+
+        assert_eq!(path, tempdir);
+    }
+}

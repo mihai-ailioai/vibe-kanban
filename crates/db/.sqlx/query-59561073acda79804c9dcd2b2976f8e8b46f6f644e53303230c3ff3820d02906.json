@@ -1,0 +1,74 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT id as \"id!: Uuid\",\n                      workspace_id as \"workspace_id!: Uuid\",\n                      source_type as \"source_type!: WorkspaceSourceKind\",\n                      repo_id as \"repo_id: Uuid\",\n                      path,\n                      display_name,\n                      target_branch,\n                      position,\n                      created_at as \"created_at!: DateTime<Utc>\",\n                      updated_at as \"updated_at!: DateTime<Utc>\"\n               FROM workspace_sources\n               WHERE workspace_id = $1\n               ORDER BY position ASC, id ASC",
+  "describe": {
+    "columns": [
+      {
+        "name": "id!: Uuid",
+        "ordinal": 0,
+        "type_info": "Blob"
+      },
+      {
+        "name": "workspace_id!: Uuid",
+        "ordinal": 1,
+        "type_info": "Blob"
+      },
+      {
+        "name": "source_type!: WorkspaceSourceKind",
+        "ordinal": 2,
+        "type_info": "Text"
+      },
+      {
+        "name": "repo_id: Uuid",
+        "ordinal": 3,
+        "type_info": "Blob"
+      },
+      {
+        "name": "path",
+        "ordinal": 4,
+        "type_info": "Text"
+      },
+      {
+        "name": "display_name",
+        "ordinal": 5,
+        "type_info": "Text"
+      },
+      {
+        "name": "target_branch",
+        "ordinal": 6,
+        "type_info": "Text"
+      },
+      {
+        "name": "position",
+        "ordinal": 7,
+        "type_info": "Integer"
+      },
+      {
+        "name": "created_at!: DateTime<Utc>",
+        "ordinal": 8,
+        "type_info": "Text"
+      },
+      {
+        "name": "updated_at!: DateTime<Utc>",
+        "ordinal": 9,
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      true,
+      false,
+      false,
+      true,
+      true,
+      true,
+      true,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "59561073acda79804c9dcd2b2976f8e8b46f6f644e53303230c3ff3820d02906"
+}

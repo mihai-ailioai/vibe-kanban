@@ -11,6 +11,7 @@ use ts_rs::TS;
 use utils::response::ApiResponse;
 use uuid::Uuid;
 
+use super::capabilities::require_repo_attach;
 use crate::{DeploymentImpl, error::ApiError};
 
 #[derive(Debug, Deserialize, Serialize, TS)]
@@ -45,6 +46,8 @@ pub async fn add_workspace_repo(
     State(deployment): State<DeploymentImpl>,
     Json(payload): Json<AddWorkspaceRepoRequest>,
 ) -> Result<ResponseJson<ApiResponse<AddWorkspaceRepoResponse>>, ApiError> {
+    require_repo_attach(&workspace).map_err(ApiError::BadRequest)?;
+
     let mut managed_workspace = deployment
         .workspace_manager()
         .load_managed_workspace(workspace)
@@ -90,4 +93,84 @@ pub async fn add_workspace_repo(
     Ok(ResponseJson(ApiResponse::success(
         AddWorkspaceRepoResponse { workspace, repo },
     )))
+}
+
+#[cfg(test)]
+mod tests {
+    use axum::{Router, http::StatusCode};
+    use db::models::workspace::{CreateWorkspace, Workspace, WorkspaceMode};
+    use deployment::Deployment;
+    use tokio::net::TcpListener;
+    use utils::response::ApiResponse;
+    use uuid::Uuid;
+
+    use crate::{DeploymentImpl, test_support::TestAssetDirGuard};
+
+    async fn start_app() -> (
+        TestAssetDirGuard,
+        DeploymentImpl,
+        String,
+        tokio::task::JoinHandle<()>,
+    ) {
+        let (asset_guard, deployment) = crate::test_support::new_test_deployment().await;
+
+        let app = Router::new()
+            .nest("/api", super::super::router(&deployment))
+            .with_state(deployment.clone());
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+
+        (asset_guard, deployment, format!("http://{address}"), server)
+    }
+
+    async fn create_workspace(
+        deployment: &DeploymentImpl,
+        workspace_mode: WorkspaceMode,
+    ) -> Workspace {
+        Workspace::create(
+            &deployment.db().pool,
+            &CreateWorkspace {
+                branch: format!("repos-route-test-{}", Uuid::new_v4()),
+                workspace_mode,
+                name: Some("Repos route capability test".to_string()),
+            },
+            Uuid::new_v4(),
+        )
+        .await
+        .unwrap()
+    }
+
+    #[tokio::test]
+    async fn add_workspace_repo_rejects_in_place_git_mode() {
+        let (_asset_guard, deployment, base_url, server) = start_app().await;
+        let workspace = create_workspace(&deployment, WorkspaceMode::InPlaceGit).await;
+
+        let response = reqwest::Client::new()
+            .post(format!("{base_url}/api/workspaces/{}/repos", workspace.id))
+            .json(&super::AddWorkspaceRepoRequest {
+                repo_id: Uuid::new_v4(),
+                target_branch: "main".to_string(),
+            })
+            .send()
+            .await
+            .unwrap();
+
+        let status = response.status();
+        let body = response.text().await.unwrap();
+
+        server.abort();
+        let _ = server.await;
+        let _ = Workspace::delete(&deployment.db().pool, workspace.id).await;
+
+        assert_eq!(status, StatusCode::BAD_REQUEST, "body: {body}");
+        let payload: ApiResponse<serde_json::Value> = serde_json::from_str(&body).unwrap();
+        assert!(!payload.is_success());
+        let message = payload.message().unwrap();
+        assert!(message.contains("in_place_git"));
+        assert!(message.contains("repository attach"));
+    }
 }

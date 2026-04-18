@@ -14,12 +14,16 @@ A workspace is your task execution environment where you work with coding agents
 Understanding what happens behind the scenes helps you work more effectively:
 
 <Steps>
-<Step title="Git worktree is created">
-Vibe Kanban creates a **git worktree** - a separate working directory with its own branch. This keeps your changes isolated from your main codebase. Your original repository remains untouched.
+<Step title="Workspace mode determines how code is opened">
+Vibe Kanban creates the workspace using the mode you selected:
+
+- **`git_worktree` (recommended)** creates a managed git worktree on a new working branch
+- **`in_place_git`** opens your existing git checkout in place
+- **`in_place_directory`** opens a plain folder without Git operations
 </Step>
 
 <Step title="Working branch is created">
-A new branch is created based on your target branch (e.g., `main`). The branch name is auto-generated based on your task (e.g., `vk/abc123-add-login-page`).
+A new working branch is created when the mode supports it. In `git_worktree`, Vibe Kanban creates the branch from your target branch (for example `main`). The branch name is auto-generated from your task (for example `vk/abc123-add-login-page`).
 </Step>
 
 <Step title="Agent session starts">
@@ -32,8 +36,22 @@ If your repository has setup scripts configured (e.g., `npm install`), they run 
 </Steps>
 
 <Info>
-**Where do workspaces live?** Worktrees are created in a `.vibe-kanban-workspaces` directory (configurable in Settings → General → Workspace Directory). Each workspace gets its own folder.
+**Where do workspaces live?** `git_worktree` workspaces are created in a `.vibe-kanban-workspaces` directory (configurable in Settings → General → Workspace Directory). `in_place_git` and `in_place_directory` use the repo or folder you selected instead of creating a managed copy.
 </Info>
+
+## Compare Workspace Modes
+
+Choose the mode that matches how you want to work with your code:
+
+| Mode | Best for | What you select | What Vibe Kanban does |
+| --- | --- | --- | --- |
+| **`git_worktree`** | Most software tasks | One or more repositories and a target branch for each repo | Creates managed git worktrees and new working branches |
+| **`in_place_git`** | Advanced Git workflows in existing checkouts | One or more existing repositories | Works directly in those repo folders without creating a separate repo copy |
+| **`in_place_directory`** | Non-Git folders such as Unity projects | One folder | Opens the folder directly and hides unsupported Git actions |
+
+<Tip>
+Use `git_worktree` unless you have a specific reason to work in place. It gives you the clearest isolation and keeps your main checkout untouched.
+</Tip>
 
 ## Creating a New Workspace
 
@@ -58,34 +76,48 @@ If your repository has setup scripts configured (e.g., `npm install`), they run 
   </Note>
 </Step>
 
-<Step title="Add Repositories">
+<Step title="Choose a Workspace Mode">
+  Select how you want the workspace to open your code:
+
+  - **`git_worktree`** for the recommended default workflow
+  - **`in_place_git`** when you intentionally want to work in existing git checkouts
+  - **`in_place_directory`** when you want to work in a plain folder without Git
+</Step>
+
+<Step title="Select Repositories or a Folder">
   <Frame>
   <img style={{maxHeight: "350px"}} src="/images/workspaces-add-repo.png" alt="Repository selection showing selected repo with branch dropdown and list of available repositories" />
   </Frame>
 
-  Select which repositories to include in your workspace:
+  The inputs change based on the mode:
 
-  - **Recent repositories** - Click any repo from the list to add it
+  - **`git_worktree`** - select one or more repositories to include
+  - **`in_place_git`** - select one or more existing repositories to use in place
+  - **`in_place_directory`** - select one folder to open directly
+
+  For Git-backed modes, you can:
+
+  - **Use recent repositories** - Click any repo from the list to add it
   - **Browse repos on disk** - Find repositories not in the recent list
-  - **Create new repo on disk** - Initialise a new git repository
+  - **Create a new repo on disk** - Initialise a new git repository
 
   <Tip>
-  You can add multiple repositories to a single workspace if your task spans multiple codebases. Each repository maintains independent git state.
+  You can add multiple repositories to a single workspace in Git-backed modes if your task spans multiple codebases. Each repository keeps its own git state.
   </Tip>
 </Step>
 
 <Step title="Set Target Branches">
-  For each selected repository, set the **target branch** - this is the branch your changes will eventually be merged into (e.g., `main` or `develop`).
+  If you selected `git_worktree`, set the **target branch** for each repository. This is the branch your changes will eventually be merged into, such as `main` or `develop`.
 
   Click the branch dropdown next to each repository to change the target branch.
 
   <Info>
-  **Target branch vs Working branch - what's the difference?**
+  **Target branch vs working branch - what's the difference?**
 
-  - **Target branch** = Where your changes will eventually be merged (e.g., `main`). You set this.
-  - **Working branch** = Where your changes are made (e.g., `vk/abc123-task-name`). Auto-created from target.
+  - **Target branch** = Where your changes will eventually be merged, such as `main`. You set this.
+  - **Working branch** = Where your changes are made, such as `vk/abc123-task-name`. Vibe Kanban creates this from the target branch in `git_worktree` mode.
 
-  Your changes are made on the working branch and don't affect the target until you create and merge a PR.
+  Your changes stay on the working branch and do not affect the target branch until you create and merge a pull request.
   </Info>
 </Step>
 
@@ -140,7 +172,7 @@ If you need to create a new project before setting up your workspace:
 </Step>
 
 <Step title="Continue with Workspace Creation">
-  Your new project is automatically selected. Continue adding repositories and configuring your workspace.
+  Your new project is automatically selected. Continue by choosing a workspace mode and then selecting repositories or a folder.
 </Step>
 </Steps>
 
@@ -154,7 +186,7 @@ Once a workspace is created, you can configure additional settings:
 
 ### Working Branch
 
-The workspace automatically creates a working branch for your changes. You can view and change this in the **Git** section of the details sidebar.
+`git_worktree` workspaces automatically create a working branch for your changes. You can view and change this in the **Git** section of the details sidebar when the workspace mode supports Git.
 
 ### Dev Server
 
@@ -203,25 +235,27 @@ Use the **Pin** feature to keep important active workspaces at the top of your l
 <Accordion title="I can't see my repository in the list">
 **Possible causes:**
 - The repository hasn't been added to a project yet
-- The folder isn't a git repository (no `.git` folder)
+- You selected a Git-backed mode, but the folder is not a git repository
 - The path isn't accessible
 
 **Solutions:**
 1. Click **Browse repos on disk** to manually locate the repository
-2. Ensure the folder contains a `.git` directory
-3. Check that Vibe Kanban has permission to access the folder
+2. Ensure the folder contains a `.git` directory if you are using `git_worktree` or `in_place_git`
+3. If you want to work in a plain folder, switch to `in_place_directory`
+4. Check that Vibe Kanban has permission to access the folder
 </Accordion>
 
 <Accordion title="Workspace creation fails">
 **Possible causes:**
-- Git worktree creation failed (usually due to uncommitted changes in the original repo)
-- Branch name conflict
+- `git_worktree` setup failed because Git could not create the workspace or branch
+- The selected repo or folder is not valid for the mode you chose
 - Disk space issues
 
 **Solutions:**
-1. Commit or stash any uncommitted changes in your original repository
-2. Try a different target branch
-3. Check available disk space (worktrees require space for a full copy of tracked files)
+1. For `git_worktree`, commit or stash conflicting changes in the original repository and try again
+2. Check that you selected repositories for Git-backed modes or a folder for `in_place_directory`
+3. Try a different target branch if the failure is branch-related
+4. Check available disk space, especially if you are creating managed worktrees
 </Accordion>
 
 <Accordion title="Agent doesn't start after creating workspace">

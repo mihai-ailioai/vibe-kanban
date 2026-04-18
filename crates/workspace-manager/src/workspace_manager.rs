@@ -7,7 +7,7 @@ use db::{
         repo::{Repo, RepoError},
         requests::WorkspaceRepoInput,
         session::Session,
-        workspace::Workspace as DbWorkspace,
+        workspace::{Workspace as DbWorkspace, WorkspaceMode},
         workspace_repo::{CreateWorkspaceRepo, RepoWithTargetBranch, WorkspaceRepo},
     },
 };
@@ -76,6 +76,7 @@ pub struct WorktreeContainer {
 pub struct WorkspaceDeletionContext {
     pub workspace_id: Uuid,
     pub branch_name: String,
+    pub workspace_mode: WorkspaceMode,
     pub workspace_dir: Option<PathBuf>,
     pub repositories: Vec<Repo>,
     pub repo_paths: Vec<PathBuf>,
@@ -182,6 +183,7 @@ impl ManagedWorkspace {
         Ok(WorkspaceDeletionContext {
             workspace_id: self.workspace.id,
             branch_name: self.workspace.branch.clone(),
+            workspace_mode: self.workspace.workspace_mode,
             workspace_dir: self.workspace.container_ref.clone().map(PathBuf::from),
             repositories,
             repo_paths,
@@ -219,63 +221,80 @@ impl WorkspaceManager {
         delete_branches: bool,
     ) {
         tokio::spawn(async move {
-            let WorkspaceDeletionContext {
-                workspace_id,
-                branch_name,
-                workspace_dir,
-                repositories,
-                repo_paths,
-                session_ids,
-            } = context;
+            Self::run_workspace_deletion_cleanup(context, delete_branches).await;
+        });
+    }
 
-            for session_id in session_ids {
-                if let Err(e) = Self::remove_session_process_logs(session_id).await {
-                    warn!(
-                        "Failed to remove filesystem process logs for session {}: {}",
-                        session_id, e
-                    );
-                }
-            }
+    async fn run_workspace_deletion_cleanup(
+        context: WorkspaceDeletionContext,
+        delete_branches: bool,
+    ) {
+        let WorkspaceDeletionContext {
+            workspace_id,
+            branch_name,
+            workspace_mode,
+            workspace_dir,
+            repositories,
+            repo_paths,
+            session_ids,
+        } = context;
 
-            if let Some(workspace_dir) = workspace_dir {
-                info!(
-                    "Starting background cleanup for workspace {} at {}",
-                    workspace_id,
-                    workspace_dir.display()
+        for session_id in session_ids {
+            if let Err(e) = Self::remove_session_process_logs(session_id).await {
+                warn!(
+                    "Failed to remove filesystem process logs for session {}: {}",
+                    session_id, e
                 );
-
-                if let Err(e) = Self::cleanup_workspace(&workspace_dir, &repositories).await {
-                    error!(
-                        "Background workspace cleanup failed for {} at {}: {}",
-                        workspace_id,
-                        workspace_dir.display(),
-                        e
-                    );
-                } else {
-                    info!(
-                        "Background cleanup completed for workspace {}",
-                        workspace_id
-                    );
-                }
             }
+        }
 
-            if delete_branches {
-                let git_service = GitService::new();
-                for repo_path in repo_paths {
-                    match git_service.delete_branch(&repo_path, &branch_name) {
-                        Ok(()) => {
-                            info!("Deleted branch '{}' from repo {:?}", branch_name, repo_path);
-                        }
-                        Err(e) => {
-                            warn!(
-                                "Failed to delete branch '{}' from repo {:?}: {}",
-                                branch_name, repo_path, e
-                            );
-                        }
+        if let Some(workspace_dir) = workspace_dir {
+            info!(
+                "Starting background cleanup for workspace {} at {}",
+                workspace_id,
+                workspace_dir.display()
+            );
+
+            let cleanup_result = match workspace_mode {
+                WorkspaceMode::GitWorktree => {
+                    Self::cleanup_workspace(&workspace_dir, &repositories).await
+                }
+                WorkspaceMode::InPlaceGit | WorkspaceMode::InPlaceDirectory => {
+                    Self::cleanup_workspace_root_in_base_dir(&workspace_dir).await
+                }
+            };
+
+            if let Err(e) = cleanup_result {
+                error!(
+                    "Background workspace cleanup failed for {} at {}: {}",
+                    workspace_id,
+                    workspace_dir.display(),
+                    e
+                );
+            } else {
+                info!(
+                    "Background cleanup completed for workspace {}",
+                    workspace_id
+                );
+            }
+        }
+
+        if delete_branches && workspace_mode == WorkspaceMode::GitWorktree {
+            let git_service = GitService::new();
+            for repo_path in repo_paths {
+                match git_service.delete_branch(&repo_path, &branch_name) {
+                    Ok(()) => {
+                        info!("Deleted branch '{}' from repo {:?}", branch_name, repo_path);
+                    }
+                    Err(e) => {
+                        warn!(
+                            "Failed to delete branch '{}' from repo {:?}: {}",
+                            branch_name, repo_path, e
+                        );
                     }
                 }
             }
-        });
+        }
     }
 
     async fn remove_session_process_logs(session_id: Uuid) -> Result<(), std::io::Error> {
@@ -458,6 +477,39 @@ impl WorkspaceManager {
     /// Get the base directory for workspaces (same as worktree base dir)
     pub fn get_workspace_base_dir() -> PathBuf {
         WorktreeManager::get_worktree_base_dir()
+    }
+
+    pub async fn cleanup_workspace_root_in_base_dir(
+        workspace_dir: &Path,
+    ) -> Result<(), WorkspaceError> {
+        let workspace_base_dir = tokio::fs::canonicalize(Self::get_workspace_base_dir()).await?;
+        let resolved_workspace_dir =
+            Self::resolve_workspace_root_for_cleanup(workspace_dir).await?;
+
+        if resolved_workspace_dir == workspace_base_dir
+            || !resolved_workspace_dir.starts_with(&workspace_base_dir)
+        {
+            return Err(WorkspaceError::Io(std::io::Error::other(format!(
+                "Refusing to clean up workspace outside the workspace base directory: {}",
+                workspace_dir.display()
+            ))));
+        }
+
+        if tokio::fs::try_exists(&resolved_workspace_dir).await? {
+            tokio::fs::remove_dir_all(&resolved_workspace_dir).await?;
+        }
+
+        Ok(())
+    }
+
+    async fn resolve_workspace_root_for_cleanup(
+        workspace_dir: &Path,
+    ) -> Result<PathBuf, WorkspaceError> {
+        if tokio::fs::try_exists(workspace_dir).await? {
+            return Ok(tokio::fs::canonicalize(workspace_dir).await?);
+        }
+
+        Ok(normalize_path(workspace_dir))
     }
 
     /// Migrate a legacy single-worktree layout to the new workspace layout.
@@ -649,5 +701,289 @@ impl WorkspaceManager {
         }
 
         Ok(())
+    }
+}
+
+fn normalize_path(path: &Path) -> PathBuf {
+    use std::path::Component;
+
+    let mut normalized = PathBuf::new();
+
+    for component in path.components() {
+        match component {
+            Component::Prefix(prefix) => normalized.push(prefix.as_os_str()),
+            Component::RootDir => normalized.push(component.as_os_str()),
+            Component::CurDir => {}
+            Component::ParentDir => {
+                normalized.pop();
+            }
+            Component::Normal(segment) => normalized.push(segment),
+        }
+    }
+
+    normalized
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{path::Path, str::FromStr, sync::OnceLock};
+
+    use db::{
+        DBService,
+        models::{
+            repo::Repo,
+            workspace::{CreateWorkspace, Workspace as DbWorkspace, WorkspaceMode},
+            workspace_repo::{CreateWorkspaceRepo, WorkspaceRepo},
+        },
+    };
+    use git::GitService;
+    use sqlx::{ConnectOptions, SqlitePool, sqlite::SqliteConnectOptions};
+    use uuid::Uuid;
+    use worktree_manager::WorktreeManager;
+
+    use super::WorkspaceManager;
+
+    async fn test_pool() -> SqlitePool {
+        let db_path = std::env::temp_dir().join(format!(
+            "workspace-manager-delete-tests-{}.sqlite",
+            Uuid::new_v4()
+        ));
+        let database_url = format!("sqlite://{}", db_path.to_string_lossy());
+
+        let options = SqliteConnectOptions::from_str(&database_url)
+            .unwrap()
+            .create_if_missing(true)
+            .disable_statement_logging();
+
+        let pool = SqlitePool::connect_with(options).await.unwrap();
+        sqlx::query("PRAGMA foreign_keys = ON")
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::migrate!("../db/migrations").run(&pool).await.unwrap();
+        pool
+    }
+
+    async fn create_workspace(pool: &SqlitePool, label: &str, branch: &str) -> DbWorkspace {
+        DbWorkspace::create(
+            pool,
+            &CreateWorkspace {
+                branch: branch.to_string(),
+                workspace_mode: WorkspaceMode::InPlaceGit,
+                name: Some(format!("Workspace {label}")),
+            },
+            Uuid::new_v4(),
+        )
+        .await
+        .unwrap()
+    }
+
+    async fn attach_repo(
+        pool: &SqlitePool,
+        workspace_id: Uuid,
+        repo_path: &Path,
+        name: &str,
+    ) -> Repo {
+        let repo = Repo::find_or_create(pool, repo_path, name).await.unwrap();
+        WorkspaceRepo::create_many(
+            pool,
+            workspace_id,
+            &[CreateWorkspaceRepo {
+                repo_id: repo.id,
+                target_branch: "main".to_string(),
+            }],
+        )
+        .await
+        .unwrap();
+        repo
+    }
+
+    fn test_workspace_base_dir() -> &'static Path {
+        static TEST_WORKSPACE_BASE_DIR: OnceLock<std::path::PathBuf> = OnceLock::new();
+
+        TEST_WORKSPACE_BASE_DIR.get_or_init(|| {
+            let override_root = std::env::temp_dir().join(format!(
+                "workspace-manager-test-base-dir-{}",
+                Uuid::new_v4()
+            ));
+            std::fs::create_dir_all(&override_root).unwrap();
+            WorktreeManager::set_workspace_dir_override(override_root);
+
+            let base_dir = WorkspaceManager::get_workspace_base_dir();
+            std::fs::create_dir_all(&base_dir).unwrap();
+            base_dir
+        })
+    }
+
+    async fn wait_for_workspace_cleanup(workspace_dir: &Path) {
+        for _ in 0..40 {
+            if !workspace_dir.exists() {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+        }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn spawn_workspace_deletion_cleanup_for_in_place_git_removes_only_synthetic_root() {
+        let pool = test_pool().await;
+        let git = GitService::new();
+        let branch = format!("workspace-branch-{}", Uuid::new_v4());
+        let workspace = create_workspace(&pool, "cleanup-root", &branch).await;
+        let repo_path =
+            std::env::temp_dir().join(format!("workspace-manager-real-repo-{}", Uuid::new_v4()));
+        git.initialize_repo_with_main_branch(&repo_path).unwrap();
+        std::fs::write(repo_path.join("README.md"), "repo\n").unwrap();
+
+        let repo = attach_repo(&pool, workspace.id, &repo_path, "repo").await;
+        let workspace_dir = test_workspace_base_dir().join(format!(
+            "workspace-manager-synthetic-root-{}",
+            Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(&workspace_dir).unwrap();
+        std::os::unix::fs::symlink(&repo.path, workspace_dir.join(&repo.name)).unwrap();
+        DbWorkspace::update_container_ref(&pool, workspace.id, &workspace_dir.to_string_lossy())
+            .await
+            .unwrap();
+
+        let workspace = DbWorkspace::find_by_id(&pool, workspace.id)
+            .await
+            .unwrap()
+            .unwrap();
+        let manager = WorkspaceManager::new(DBService { pool: pool.clone() });
+        let managed_workspace = manager.load_managed_workspace(workspace).await.unwrap();
+        let deletion_context = managed_workspace.prepare_deletion_context().await.unwrap();
+
+        WorkspaceManager::spawn_workspace_deletion_cleanup(deletion_context, false);
+        wait_for_workspace_cleanup(&workspace_dir).await;
+
+        assert!(!workspace_dir.exists());
+        assert!(repo_path.exists());
+        assert!(repo_path.join("README.md").exists());
+
+        let _ = tokio::fs::remove_dir_all(&repo_path).await;
+    }
+
+    #[tokio::test]
+    async fn spawn_workspace_deletion_cleanup_for_in_place_git_never_deletes_repo_outside_workspace_base_dir()
+     {
+        let _ = test_workspace_base_dir();
+        let pool = test_pool().await;
+        let git = GitService::new();
+        let branch = format!("workspace-branch-{}", Uuid::new_v4());
+        let workspace = create_workspace(&pool, "outside-base-guard", &branch).await;
+        let repo_path = std::env::temp_dir().join(format!(
+            "workspace-manager-outside-base-repo-{}",
+            Uuid::new_v4()
+        ));
+        git.initialize_repo_with_main_branch(&repo_path).unwrap();
+        std::fs::write(repo_path.join("README.md"), "repo\n").unwrap();
+
+        attach_repo(&pool, workspace.id, &repo_path, "repo").await;
+        DbWorkspace::update_container_ref(&pool, workspace.id, &repo_path.to_string_lossy())
+            .await
+            .unwrap();
+
+        let workspace = DbWorkspace::find_by_id(&pool, workspace.id)
+            .await
+            .unwrap()
+            .unwrap();
+        let manager = WorkspaceManager::new(DBService { pool: pool.clone() });
+        let managed_workspace = manager.load_managed_workspace(workspace).await.unwrap();
+        let deletion_context = managed_workspace.prepare_deletion_context().await.unwrap();
+
+        WorkspaceManager::spawn_workspace_deletion_cleanup(deletion_context, false);
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+
+        assert!(repo_path.exists());
+        assert!(repo_path.join("README.md").exists());
+
+        let _ = tokio::fs::remove_dir_all(&repo_path).await;
+    }
+
+    #[tokio::test]
+    async fn spawn_workspace_deletion_cleanup_for_in_place_git_skips_branch_deletion() {
+        let pool = test_pool().await;
+        let git = GitService::new();
+        let branch = format!("workspace-branch-{}", Uuid::new_v4());
+        let workspace = create_workspace(&pool, "skip-branch-delete", &branch).await;
+        let repo_path =
+            std::env::temp_dir().join(format!("workspace-manager-branch-repo-{}", Uuid::new_v4()));
+        git.initialize_repo_with_main_branch(&repo_path).unwrap();
+        git.create_branch(&repo_path, &branch, "main").unwrap();
+
+        attach_repo(&pool, workspace.id, &repo_path, "repo").await;
+        let workspace_dir = test_workspace_base_dir().join(format!(
+            "workspace-manager-delete-branch-root-{}",
+            Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(&workspace_dir).unwrap();
+        DbWorkspace::update_container_ref(&pool, workspace.id, &workspace_dir.to_string_lossy())
+            .await
+            .unwrap();
+
+        let workspace = DbWorkspace::find_by_id(&pool, workspace.id)
+            .await
+            .unwrap()
+            .unwrap();
+        let manager = WorkspaceManager::new(DBService { pool: pool.clone() });
+        let managed_workspace = manager.load_managed_workspace(workspace).await.unwrap();
+        let deletion_context = managed_workspace.prepare_deletion_context().await.unwrap();
+
+        WorkspaceManager::spawn_workspace_deletion_cleanup(deletion_context, true);
+        wait_for_workspace_cleanup(&workspace_dir).await;
+
+        assert!(git.check_branch_exists(&repo_path, &branch).unwrap());
+
+        let _ = tokio::fs::remove_dir_all(&repo_path).await;
+    }
+
+    #[tokio::test]
+    async fn cleanup_workspace_root_in_base_dir_removes_valid_workspace_root_under_base_dir() {
+        let workspace_root = test_workspace_base_dir()
+            .join(format!("workspace-manager-valid-root-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&workspace_root).unwrap();
+        std::fs::write(workspace_root.join("README.md"), "workspace\n").unwrap();
+
+        WorkspaceManager::cleanup_workspace_root_in_base_dir(&workspace_root)
+            .await
+            .unwrap();
+
+        assert!(!workspace_root.exists());
+    }
+
+    #[tokio::test]
+    async fn cleanup_workspace_root_in_base_dir_rejects_workspace_base_dir_itself() {
+        let workspace_base_dir = test_workspace_base_dir();
+        std::fs::write(workspace_base_dir.join("base-marker.txt"), "keep\n").unwrap();
+
+        let err = WorkspaceManager::cleanup_workspace_root_in_base_dir(workspace_base_dir)
+            .await
+            .unwrap_err();
+
+        assert!(err.to_string().contains("workspace base directory"));
+        assert!(workspace_base_dir.exists());
+        assert!(workspace_base_dir.join("base-marker.txt").exists());
+    }
+
+    #[tokio::test]
+    async fn cleanup_workspace_root_in_base_dir_rejects_normalized_outside_path() {
+        let workspace_base_dir = test_workspace_base_dir();
+        let outside_dir_name = format!("workspace-manager-outside-root-{}", Uuid::new_v4());
+        let outside_dir = workspace_base_dir.parent().unwrap().join(&outside_dir_name);
+        std::fs::create_dir_all(&outside_dir).unwrap();
+        std::fs::write(outside_dir.join("outside.txt"), "keep\n").unwrap();
+
+        let escaped_path = workspace_base_dir.join("..").join(&outside_dir_name);
+        let err = WorkspaceManager::cleanup_workspace_root_in_base_dir(&escaped_path)
+            .await
+            .unwrap_err();
+
+        assert!(err.to_string().contains("workspace base directory"));
+        assert!(outside_dir.exists());
+        assert!(outside_dir.join("outside.txt").exists());
+
+        let _ = tokio::fs::remove_dir_all(&outside_dir).await;
     }
 }

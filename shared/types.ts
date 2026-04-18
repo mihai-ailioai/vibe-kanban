@@ -32,7 +32,7 @@ export type UpdateTag = { tag_name: string | null, content: string | null, };
 
 export type DraftFollowUpData = { message: string, executor_config: ExecutorConfig, };
 
-export type DraftWorkspaceData = { message: string, repos: Array<DraftWorkspaceRepo>, executor_config: ExecutorConfig | null, linked_issue: DraftWorkspaceLinkedIssue | null, attachments: Array<DraftWorkspaceAttachment>, };
+export type DraftWorkspaceData = { message: string, repos: Array<DraftWorkspaceRepo>, executor_config: ExecutorConfig | null, linked_issue: DraftWorkspaceLinkedIssue | null, attachments: Array<DraftWorkspaceAttachment>, } | { message: string, workspace_mode?: WorkspaceMode, sources?: Array<WorkspaceSourceInput>, executor_config: ExecutorConfig | null, linked_issue: DraftWorkspaceLinkedIssue | null, attachments: Array<DraftWorkspaceAttachment>, };
 
 export type DraftWorkspaceAttachment = { id: string, file_path: string, original_name: string, mime_type: string | null, size_bytes: bigint, };
 
@@ -152,9 +152,17 @@ export type CreateScratch = { payload: ScratchPayload, };
 
 export type UpdateScratch = { payload: ScratchPayload, };
 
-export type Workspace = { id: string, task_id: string | null, container_ref: string | null, branch: string, setup_completed_at: string | null, created_at: string, updated_at: string, archived: boolean, pinned: boolean, name: string | null, worktree_deleted: boolean, };
+export type WorkspaceMode = "git_worktree" | "in_place_git" | "in_place_directory";
 
-export type WorkspaceWithStatus = { is_running: boolean, is_errored: boolean, id: string, task_id: string | null, container_ref: string | null, branch: string, setup_completed_at: string | null, created_at: string, updated_at: string, archived: boolean, pinned: boolean, name: string | null, worktree_deleted: boolean, };
+export type Workspace = { id: string, task_id: string | null, container_ref: string | null, branch: string, workspace_mode: WorkspaceMode, setup_completed_at: string | null, created_at: string, updated_at: string, archived: boolean, pinned: boolean, name: string | null, worktree_deleted: boolean, };
+
+export type WorkspaceWithStatus = { is_running: boolean, is_errored: boolean, id: string, task_id: string | null, container_ref: string | null, branch: string, workspace_mode: WorkspaceMode, setup_completed_at: string | null, created_at: string, updated_at: string, archived: boolean, pinned: boolean, name: string | null, worktree_deleted: boolean, };
+
+export type WorkspaceCapabilities = { supports_git_read: boolean, supports_git_write: boolean, supports_pull_requests: boolean, supports_repo_attach: boolean, supports_delete_branches: boolean, };
+
+export type WorkspaceSourceKind = "git_repo" | "directory";
+
+export type WorkspaceSource = { id: string, workspace_id: string, source_type: WorkspaceSourceKind, repo_id: string | null, path: string | null, display_name: string | null, target_branch: string | null, position: bigint, created_at: string, updated_at: string, };
 
 export type Session = { id: string, workspace_id: string, name: string | null, executor: string | null, agent_working_dir: string | null, created_at: string, updated_at: string, };
 
@@ -362,6 +370,8 @@ export type AttachmentMetadata = { exists: boolean, file_name: string | null, pa
 
 export type WorkspaceRepoInput = { repo_id: string, target_branch: string, };
 
+export type WorkspaceSourceInput = { "type": "git_repo", repo_id: string, target_branch: string, } | { "type": "directory", path: string, display_name: string | null, };
+
 export type RunAgentSetupRequest = { executor_profile_id: ExecutorProfileId, };
 
 export type RunAgentSetupResponse = Record<string, never>;
@@ -398,9 +408,9 @@ export type GetPrCommentsError = { "type": "no_pr_attached" } | { "type": "cli_n
 
 export type GetPrCommentsQuery = { repo_id: string, };
 
-export type CreateAndStartWorkspaceRequest = { name: string | null, repos: Array<WorkspaceRepoInput>, linked_issue: LinkedIssueInfo | null, executor_config: ExecutorConfig, prompt: string, attachment_ids: Array<string> | null, };
+export type CreateAndStartWorkspaceRequest = { name: string | null, repos: Array<WorkspaceRepoInput>, linked_issue: LinkedIssueInfo | null, executor_config: ExecutorConfig, prompt: string, attachment_ids: Array<string> | null, } | { name: string | null, workspace_mode?: WorkspaceMode, sources?: Array<WorkspaceSourceInput>, linked_issue: LinkedIssueInfo | null, executor_config: ExecutorConfig, prompt: string, attachment_ids: Array<string> | null, };
 
-export type CreateAndStartWorkspaceResponse = { workspace: Workspace, execution_process: ExecutionProcess, };
+export type CreateAndStartWorkspaceResponse = { workspace: Workspace, sources: Array<WorkspaceSource>, execution_process: ExecutionProcess, };
 
 export type UnifiedPrComment = { "comment_type": "general", id: string, author: string, author_association: string | null, body: string, created_at: string, url: string | null, } | { "comment_type": "review", id: bigint, author: string, author_association: string | null, body: string, created_at: string, url: string | null, path: string, line: bigint | null, side: string | null, diff_hunk: string | null, };
 

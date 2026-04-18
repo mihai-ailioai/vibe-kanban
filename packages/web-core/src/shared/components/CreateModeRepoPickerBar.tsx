@@ -9,7 +9,7 @@ import {
   XIcon,
 } from '@phosphor-icons/react';
 import { useTranslation } from 'react-i18next';
-import type { Repo } from 'shared/types';
+import type { Repo, WorkspaceMode } from 'shared/types';
 import type { BranchItem, RepoItem } from '@/shared/types/selectionItems';
 import { repoApi } from '@/shared/lib/api';
 import { cn } from '@/shared/lib/utils';
@@ -67,16 +67,27 @@ const repoRowButtonClassName =
   'disabled:cursor-not-allowed disabled:opacity-50';
 
 interface CreateModeRepoPickerBarProps {
+  workspaceMode: WorkspaceMode;
+  onWorkspaceModeChange: (workspaceMode: WorkspaceMode) => void;
   onContinueToPrompt: () => void;
 }
 
 export function CreateModeRepoPickerBar({
+  workspaceMode,
+  onWorkspaceModeChange,
   onContinueToPrompt,
 }: CreateModeRepoPickerBarProps) {
   const { t } = useTranslation('common');
   const queryClient = useQueryClient();
-  const { repos, targetBranches, addRepo, removeRepo, setTargetBranch } =
-    useCreateMode();
+  const {
+    repos,
+    targetBranches,
+    directorySource,
+    setDirectorySource,
+    addRepo,
+    removeRepo,
+    setTargetBranch,
+  } = useCreateMode();
   const [pendingAction, setPendingAction] = useState<PendingAction>(null);
   const [branchRepoId, setBranchRepoId] = useState<string | null>(null);
   const [pickerError, setPickerError] = useState<string | null>(null);
@@ -87,7 +98,21 @@ export function CreateModeRepoPickerBar({
     () => repos.some((repo) => !repo.setup_script),
     [repos]
   );
-  const showSetupHint = hasUnconfiguredRepo && !setupHintDismissed;
+  const showSetupHint =
+    workspaceMode !== 'in_place_directory' &&
+    hasUnconfiguredRepo &&
+    !setupHintDismissed;
+
+  const hasSelectedSource =
+    workspaceMode === 'in_place_directory'
+      ? !!directorySource
+      : repos.length > 0;
+  const modeWarning =
+    workspaceMode === 'in_place_git'
+      ? 'In-place Git uses the selected repository directly, so changes are not isolated in a worktree.'
+      : workspaceMode === 'in_place_directory'
+        ? 'In-place directory runs directly in the selected folder and skips Git-specific flows.'
+        : null;
 
   const selectedRepoIds = useMemo(
     () => new Set(repos.map((repo) => repo.id)),
@@ -227,6 +252,29 @@ export function CreateModeRepoPickerBar({
     );
   }, [addRepoWithBranchSelection, runPickerAction, t]);
 
+  const handleBrowseDirectory = useCallback(async () => {
+    await runPickerAction(
+      'browse',
+      async () => {
+        const selectedPath = await FolderPickerDialog.show({
+          title: 'Select workspace folder',
+          description: 'Choose the folder to use directly for this workspace.',
+          value: directorySource?.path,
+        });
+        if (!selectedPath) return;
+
+        const displayName =
+          selectedPath.split('/').filter(Boolean).pop() ?? null;
+        setDirectorySource({
+          type: 'directory',
+          path: selectedPath,
+          display_name: displayName,
+        });
+      },
+      'Failed to select directory'
+    );
+  }, [directorySource?.path, runPickerAction, setDirectorySource]);
+
   const handleChangeBranch = useCallback(
     async (repo: Repo) => {
       setBranchRepoId(repo.id);
@@ -243,120 +291,219 @@ export function CreateModeRepoPickerBar({
     [pickBranchForRepo, runPickerAction, setTargetBranch]
   );
 
+  const modeOptions: Array<{ value: WorkspaceMode; label: string }> = [
+    { value: 'git_worktree', label: 'Git worktree' },
+    { value: 'in_place_git', label: 'In-place Git' },
+    { value: 'in_place_directory', label: 'In-place directory' },
+  ];
+
   return (
     <div className="w-chat max-w-full">
       <div className="px-plusfifty py-base">
-        {repos.length > 0 && (
-          <div>
-            <div className="rounded-sm border border-border/60">
-              {repos.map((repo, index) => {
-                const branch = targetBranches[repo.id] ?? 'Select branch';
-                const repoDisplayName = getRepoDisplayName(repo);
-                const isChangingBranch =
-                  pendingAction === 'branch' && branchRepoId === repo.id;
+        <div className="flex flex-wrap gap-half">
+          {modeOptions.map((option) => (
+            <button
+              key={option.value}
+              type="button"
+              onClick={() => onWorkspaceModeChange(option.value)}
+              disabled={isBusy}
+              className={cn(
+                'rounded-sm border px-base py-half text-sm transition-colors',
+                workspaceMode === option.value
+                  ? 'border-brand bg-brand/10 text-high'
+                  : 'border-border/60 text-low hover:text-high'
+              )}
+            >
+              {option.label}
+            </button>
+          ))}
+        </div>
 
-                return (
-                  <div
-                    key={repo.id}
-                    className={cn(
-                      'flex min-w-0 items-center gap-half px-base py-half',
-                      index > 0 && 'border-t border-border/60'
-                    )}
-                  >
-                    <span className="min-w-0 flex-1 truncate text-sm text-normal">
-                      {repoDisplayName}
-                    </span>
-                    <span className="h-3 w-px shrink-0 bg-border/70" />
-                    <button
-                      type="button"
-                      onClick={() => handleChangeBranch(repo)}
-                      disabled={isBusy}
-                      className={repoRowButtonClassName}
-                      title="Change branch"
-                    >
-                      {isChangingBranch ? (
-                        <SpinnerIcon className="size-icon-xs animate-spin" />
-                      ) : (
-                        <GitBranchIcon className="size-icon-xs" weight="bold" />
-                      )}
-                      <span className="max-w-[200px] truncate">{branch}</span>
-                    </button>
-                    <span className="h-3 w-px shrink-0 bg-border/70" />
-                    <button
-                      type="button"
-                      onClick={() => removeRepo(repo.id)}
-                      disabled={isBusy}
-                      aria-label={`Remove ${repoDisplayName}`}
-                      title={`Remove ${repoDisplayName}`}
-                      className={cn(repoRowButtonClassName, 'hover:text-error')}
-                    >
-                      <XIcon className="size-icon-xs" weight="bold" />
-                    </button>
-                  </div>
-                );
-              })}
-            </div>
+        {modeWarning && (
+          <div className="mt-base rounded-sm border border-brand/20 bg-brand/5 px-base py-half text-sm text-normal">
+            {modeWarning}
           </div>
         )}
 
-        <div className="mt-base flex flex-wrap items-center gap-half">
-          <button
-            type="button"
-            onClick={handleChooseRepo}
-            disabled={isBusy}
-            className={cn(
-              recentInlineControlButtonClassName,
-              repos.length > 0
-                ? 'text-normal hover:text-high'
-                : 'text-brand hover:text-brand-hover'
+        {workspaceMode === 'in_place_directory' ? (
+          <>
+            {directorySource && (
+              <div className="mt-base rounded-sm border border-border/60 px-base py-half">
+                <div className="flex min-w-0 items-center gap-half">
+                  <span className="min-w-0 flex-1 truncate text-sm text-normal">
+                    {directorySource.display_name || directorySource.path}
+                  </span>
+                  <span className="h-3 w-px shrink-0 bg-border/70" />
+                  <button
+                    type="button"
+                    onClick={() => setDirectorySource(null)}
+                    disabled={isBusy}
+                    aria-label="Clear selected directory"
+                    title="Clear selected directory"
+                    className={cn(repoRowButtonClassName, 'hover:text-error')}
+                  >
+                    <XIcon className="size-icon-xs" weight="bold" />
+                  </button>
+                </div>
+                <p className="mt-quarter truncate text-xs text-low">
+                  {directorySource.path}
+                </p>
+              </div>
             )}
-          >
-            {pendingAction === 'choose' ? (
-              <SpinnerIcon className="size-icon-xs animate-spin" />
-            ) : (
-              <ClockCounterClockwiseIcon
-                className="size-icon-xs"
-                weight="bold"
-              />
-            )}
-            <span>{t('createMode.repoPicker.actions.recent')}</span>
-          </button>
-          <button
-            type="button"
-            onClick={handleBrowseRepo}
-            disabled={isBusy}
-            className={inlineControlButtonClassName}
-          >
-            {pendingAction === 'browse' ? (
-              <SpinnerIcon className="size-icon-xs animate-spin" />
-            ) : (
-              <MagnifyingGlassIcon className="size-icon-xs" weight="bold" />
-            )}
-            <span>{t('createMode.repoPicker.actions.browse')}</span>
-          </button>
-          <button
-            type="button"
-            onClick={handleCreateRepo}
-            disabled={isBusy}
-            className={inlineControlButtonClassName}
-          >
-            {pendingAction === 'create' ? (
-              <SpinnerIcon className="size-icon-xs animate-spin" />
-            ) : (
-              <PlusIcon className="size-icon-xs" weight="bold" />
-            )}
-            <span>{t('createMode.repoPicker.actions.create')}</span>
-          </button>
 
-          <div className="ml-auto">
-            <PrimaryButton
-              variant="default"
-              value="Continue"
-              onClick={onContinueToPrompt}
-              disabled={isBusy || repos.length === 0}
-            />
-          </div>
-        </div>
+            <div className="mt-base flex flex-wrap items-center gap-half">
+              <button
+                type="button"
+                onClick={handleBrowseDirectory}
+                disabled={isBusy}
+                className={cn(
+                  inlineControlButtonClassName,
+                  !directorySource && 'text-brand hover:text-brand-hover'
+                )}
+              >
+                {pendingAction === 'browse' ? (
+                  <SpinnerIcon className="size-icon-xs animate-spin" />
+                ) : (
+                  <MagnifyingGlassIcon className="size-icon-xs" weight="bold" />
+                )}
+                <span>
+                  {directorySource ? 'Change folder' : 'Choose folder'}
+                </span>
+              </button>
+
+              <div className="ml-auto">
+                <PrimaryButton
+                  variant="default"
+                  value="Continue"
+                  onClick={onContinueToPrompt}
+                  disabled={isBusy || !hasSelectedSource}
+                />
+              </div>
+            </div>
+          </>
+        ) : (
+          <>
+            {repos.length > 0 && (
+              <div className="mt-base">
+                <div className="rounded-sm border border-border/60">
+                  {repos.map((repo, index) => {
+                    const branch = targetBranches[repo.id] ?? 'Select branch';
+                    const repoDisplayName = getRepoDisplayName(repo);
+                    const isChangingBranch =
+                      pendingAction === 'branch' && branchRepoId === repo.id;
+
+                    return (
+                      <div
+                        key={repo.id}
+                        className={cn(
+                          'flex min-w-0 items-center gap-half px-base py-half',
+                          index > 0 && 'border-t border-border/60'
+                        )}
+                      >
+                        <span className="min-w-0 flex-1 truncate text-sm text-normal">
+                          {repoDisplayName}
+                        </span>
+                        <span className="h-3 w-px shrink-0 bg-border/70" />
+                        <button
+                          type="button"
+                          onClick={() => handleChangeBranch(repo)}
+                          disabled={isBusy}
+                          className={repoRowButtonClassName}
+                          title="Change branch"
+                        >
+                          {isChangingBranch ? (
+                            <SpinnerIcon className="size-icon-xs animate-spin" />
+                          ) : (
+                            <GitBranchIcon
+                              className="size-icon-xs"
+                              weight="bold"
+                            />
+                          )}
+                          <span className="max-w-[200px] truncate">
+                            {branch}
+                          </span>
+                        </button>
+                        <span className="h-3 w-px shrink-0 bg-border/70" />
+                        <button
+                          type="button"
+                          onClick={() => removeRepo(repo.id)}
+                          disabled={isBusy}
+                          aria-label={`Remove ${repoDisplayName}`}
+                          title={`Remove ${repoDisplayName}`}
+                          className={cn(
+                            repoRowButtonClassName,
+                            'hover:text-error'
+                          )}
+                        >
+                          <XIcon className="size-icon-xs" weight="bold" />
+                        </button>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+
+            <div className="mt-base flex flex-wrap items-center gap-half">
+              <button
+                type="button"
+                onClick={handleChooseRepo}
+                disabled={isBusy}
+                className={cn(
+                  recentInlineControlButtonClassName,
+                  repos.length > 0
+                    ? 'text-normal hover:text-high'
+                    : 'text-brand hover:text-brand-hover'
+                )}
+              >
+                {pendingAction === 'choose' ? (
+                  <SpinnerIcon className="size-icon-xs animate-spin" />
+                ) : (
+                  <ClockCounterClockwiseIcon
+                    className="size-icon-xs"
+                    weight="bold"
+                  />
+                )}
+                <span>{t('createMode.repoPicker.actions.recent')}</span>
+              </button>
+              <button
+                type="button"
+                onClick={handleBrowseRepo}
+                disabled={isBusy}
+                className={inlineControlButtonClassName}
+              >
+                {pendingAction === 'browse' ? (
+                  <SpinnerIcon className="size-icon-xs animate-spin" />
+                ) : (
+                  <MagnifyingGlassIcon className="size-icon-xs" weight="bold" />
+                )}
+                <span>{t('createMode.repoPicker.actions.browse')}</span>
+              </button>
+              <button
+                type="button"
+                onClick={handleCreateRepo}
+                disabled={isBusy}
+                className={inlineControlButtonClassName}
+              >
+                {pendingAction === 'create' ? (
+                  <SpinnerIcon className="size-icon-xs animate-spin" />
+                ) : (
+                  <PlusIcon className="size-icon-xs" weight="bold" />
+                )}
+                <span>{t('createMode.repoPicker.actions.create')}</span>
+              </button>
+
+              <div className="ml-auto">
+                <PrimaryButton
+                  variant="default"
+                  value="Continue"
+                  onClick={onContinueToPrompt}
+                  disabled={isBusy || !hasSelectedSource}
+                />
+              </div>
+            </div>
+          </>
+        )}
       </div>
       {showSetupHint && (
         <div className="mx-plusfifty mt-half flex items-start gap-half rounded-sm border border-brand/20 bg-brand/5 px-base py-base">

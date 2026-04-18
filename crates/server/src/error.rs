@@ -155,6 +155,9 @@ impl From<ContainerError> for ApiError {
             ContainerError::ExecutionProcess(e) => ApiError::ExecutionProcess(e),
             ContainerError::ExecutorError(e) => ApiError::Executor(e),
             ContainerError::Worktree(e) => e.into(),
+            err @ ContainerError::UnsupportedWorkspaceMode { .. } => {
+                ApiError::BadRequest(err.to_string())
+            }
             other => ApiError::Container(other),
         }
     }
@@ -616,5 +619,26 @@ impl From<RelayPairingClientError> for ApiError {
                 ApiError::BadGateway(err.to_string())
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use db::models::workspace::WorkspaceMode;
+    use services::services::container::ContainerError;
+
+    use super::ApiError;
+
+    #[test]
+    fn unsupported_workspace_mode_maps_to_bad_request() {
+        let api_error = ApiError::from(ContainerError::UnsupportedWorkspaceMode {
+            mode: WorkspaceMode::InPlaceDirectory,
+        });
+
+        assert!(matches!(
+            api_error,
+            ApiError::BadRequest(message)
+                if message.contains("in_place_directory") && message.contains("not implemented")
+        ));
     }
 }

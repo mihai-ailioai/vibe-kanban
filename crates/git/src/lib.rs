@@ -887,6 +887,26 @@ impl GitService {
         Ok((st.uncommitted_tracked, st.untracked))
     }
 
+    pub fn ensure_repo_clean_including_untracked(
+        &self,
+        repo_path: &Path,
+    ) -> Result<(), GitServiceError> {
+        let status = self.get_worktree_status(repo_path)?;
+        if status.uncommitted_tracked == 0 && status.untracked == 0 {
+            return Ok(());
+        }
+
+        Err(GitServiceError::WorktreeDirty(
+            self.get_head_info(repo_path)
+                .map(|head| head.branch)
+                .unwrap_or_else(|_| repo_path.display().to_string()),
+            format!(
+                "{} tracked change(s), {} untracked file(s)",
+                status.uncommitted_tracked, status.untracked
+            ),
+        ))
+    }
+
     /// Evaluate whether any action is needed to reset to `target_commit_oid` and
     /// optionally perform the actions.
     pub fn reconcile_worktree_to_commit(
@@ -1251,6 +1271,41 @@ impl GitService {
                 Err(_) => Ok(false),
             },
         }
+    }
+
+    pub fn check_local_branch_exists(
+        &self,
+        repo_path: &Path,
+        branch_name: &str,
+    ) -> Result<bool, GitServiceError> {
+        let repo = self.open_repo(repo_path)?;
+        Ok(repo.find_branch(branch_name, BranchType::Local).is_ok())
+    }
+
+    pub fn ensure_local_branch_checked_out(
+        &self,
+        repo_path: &Path,
+        workspace_branch: &str,
+        target_branch: &str,
+    ) -> Result<(), GitServiceError> {
+        let repo = self.open_repo(repo_path)?;
+        let cli = GitCli::new();
+
+        let target_exists_locally = repo.find_branch(target_branch, BranchType::Local).is_ok();
+        if !target_exists_locally {
+            return Err(GitServiceError::BranchNotFound(target_branch.to_string()));
+        }
+
+        if repo
+            .find_branch(workspace_branch, BranchType::Local)
+            .is_ok()
+        {
+            cli.checkout_local_branch(repo_path, workspace_branch)?;
+        } else {
+            cli.checkout_new_branch_from(repo_path, workspace_branch, target_branch)?;
+        }
+
+        Ok(())
     }
 
     pub fn rename_local_branch(

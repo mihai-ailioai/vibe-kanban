@@ -29,7 +29,7 @@ Once you've created a project, you can access the project settings by clicking t
 Setup scripts will be run before the coding agent is executed. This is useful for installing dependencies, for example you might run `npm install` or `cargo build`. This will save you time as your agent won't need to figure out that these commands haven't already been run.
 
 <Note>
-Each time a coding agent is executed it runs in a [git worktree](https://git-scm.com/docs/git-worktree) which is unlikely to contain your dependencies, configs, .env etc.
+Each time a coding agent is executed it runs in the workspace you selected. In the default recommended `git_worktree` mode, that means a managed [git worktree](https://git-scm.com/docs/git-worktree) which is unlikely to contain your dependencies, configs, `.env`, and other local files.
 </Note>
 
 ### Dev Server Scripts
@@ -43,10 +43,9 @@ Cleanup scripts run after a coding agent finishes it's turn. You can use these t
 
 ### Copy Files
 
-Comma-separated list of files to copy from the original project directory to the worktree. These files will be copied after the worktree is created but before the setup script runs. Useful for environment-specific files like `.env`, configuration files, and local settings.
+Comma-separated list of files to copy from the original project directory into the managed workspace copy when you use `git_worktree` mode. These files are copied after the worktree is created but before the setup script runs. Useful for environment-specific files like `.env`, configuration files, and local settings.
 
 <Warning>
 Make sure these files are gitignored or they could get committed!
 </Warning>
-
 

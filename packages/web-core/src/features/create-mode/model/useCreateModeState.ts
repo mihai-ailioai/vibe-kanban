@@ -11,6 +11,7 @@ import type {
   DraftWorkspaceAttachment,
   ExecutorConfig,
   Repo,
+  WorkspaceMode,
 } from 'shared/types';
 import { ScratchType } from 'shared/types';
 import {
@@ -29,6 +30,11 @@ import type {
   CreateModeInitialState,
   LinkedIssue,
 } from '@/shared/types/createMode';
+import {
+  buildWorkspaceSourcesForMode,
+  type DirectoryWorkspaceSourceInput,
+  DEFAULT_CREATE_MODE_WORKSPACE_MODE,
+} from '@/shared/lib/workspaceCreateState';
 
 // ============================================================================
 // Types
@@ -45,6 +51,8 @@ type Phase = 'loading' | 'ready' | 'error';
 interface DraftState {
   phase: Phase;
   error: string | null;
+  workspaceMode: WorkspaceMode;
+  directorySource: DirectoryWorkspaceSourceInput | null;
   repos: SelectedRepo[];
   message: string;
   linkedIssue: LinkedIssue | null;
@@ -58,6 +66,11 @@ type DraftAction =
       data: Partial<Omit<DraftState, 'phase' | 'error'>>;
     }
   | { type: 'INIT_ERROR'; error: string }
+  | { type: 'SET_WORKSPACE_MODE'; workspaceMode: WorkspaceMode }
+  | {
+      type: 'SET_DIRECTORY_SOURCE';
+      directorySource: DirectoryWorkspaceSourceInput | null;
+    }
   | { type: 'SET_PROJECT'; projectId: string | null }
   | { type: 'ADD_REPO'; repo: Repo; targetBranch: string | null }
   | { type: 'SET_REPOS_IF_EMPTY'; repos: SelectedRepo[] }
@@ -81,6 +94,8 @@ type DraftAction =
 const draftInitialState: DraftState = {
   phase: 'loading',
   error: null,
+  workspaceMode: DEFAULT_CREATE_MODE_WORKSPACE_MODE,
+  directorySource: null,
   repos: [],
   message: '',
   linkedIssue: null,
@@ -104,6 +119,12 @@ function draftReducer(state: DraftState, action: DraftAction): DraftState {
         phase: 'error',
         error: action.error,
       };
+
+    case 'SET_WORKSPACE_MODE':
+      return { ...state, workspaceMode: action.workspaceMode };
+
+    case 'SET_DIRECTORY_SOURCE':
+      return { ...state, directorySource: action.directorySource };
 
     case 'ADD_REPO': {
       // Don't add duplicate repos
@@ -224,6 +245,8 @@ interface UseCreateModeStateParams {
 }
 
 interface UseCreateModeStateResult {
+  workspaceMode: WorkspaceMode;
+  directorySource: DirectoryWorkspaceSourceInput | null;
   repos: Repo[];
   targetBranches: Record<string, string | null>;
   hasResolvedInitialRepoDefaults: boolean;
@@ -233,6 +256,10 @@ interface UseCreateModeStateResult {
   hasInitialValue: boolean;
   linkedIssue: LinkedIssue | null;
   executorConfig: ExecutorConfig | null;
+  setWorkspaceMode: (workspaceMode: WorkspaceMode) => void;
+  setDirectorySource: (
+    directorySource: DirectoryWorkspaceSourceInput | null
+  ) => void;
   setMessage: (message: string) => void;
   addRepo: (repo: Repo) => void;
   removeRepo: (repoId: string) => void;
@@ -362,7 +389,10 @@ export function useCreateModeState({
       enabled: shouldLoadWorkspaceDefaults,
     });
 
+  const shouldUseRepoDefaults = state.workspaceMode !== 'in_place_directory';
+
   const hasResolvedInitialRepoDefaults =
+    !shouldUseRepoDefaults ||
     (state.phase === 'ready' &&
       !localWorkspacesLoading &&
       (!state.linkedIssue || !remoteWorkspacesLoading) &&
@@ -404,6 +434,7 @@ export function useCreateModeState({
   }, [projectDefaultsStatus]);
 
   useEffect(() => {
+    if (!shouldUseRepoDefaults) return;
     if (!shouldLoadWorkspaceDefaults) return;
     if (!hasResolvedPreferredRepos) return;
     // When a project is linked, wait for project defaults to resolve first
@@ -426,6 +457,7 @@ export function useCreateModeState({
       })),
     });
   }, [
+    shouldUseRepoDefaults,
     shouldLoadWorkspaceDefaults,
     hasResolvedPreferredRepos,
     state.repos.length,
@@ -442,6 +474,7 @@ export function useCreateModeState({
   useEffect(() => {
     const remoteProjectId = state.linkedIssue?.remoteProjectId;
     if (!remoteProjectId) return;
+    if (!shouldUseRepoDefaults) return;
     if (state.repos.length > 0) return;
     if (scratchDefaultsProjectRef.current === remoteProjectId) return;
 
@@ -490,16 +523,23 @@ export function useCreateModeState({
     return () => {
       cancelled = true;
     };
-  }, [state.linkedIssue?.remoteProjectId, state.repos.length]);
+  }, [
+    state.linkedIssue?.remoteProjectId,
+    state.repos.length,
+    shouldUseRepoDefaults,
+  ]);
 
   // ============================================================================
   // Persistence to scratch (debounced)
   // ============================================================================
   const { debounced: debouncedSave } = useDebouncedCallback(
     async (data: DraftWorkspaceData) => {
+      const sourceCount = 'sources' in data ? (data.sources?.length ?? 0) : 0;
+      const repoCount = 'repos' in data ? data.repos.length : 0;
       const isEmpty =
         !data.message.trim() &&
-        data.repos.length === 0 &&
+        sourceCount === 0 &&
+        repoCount === 0 &&
         !data.executor_config &&
         data.attachments.length === 0;
 
@@ -521,10 +561,15 @@ export function useCreateModeState({
 
     debouncedSave({
       message: state.message,
-      repos: state.repos.map((r) => ({
-        repo_id: r.repo.id,
-        target_branch: r.targetBranch ?? '',
-      })),
+      workspace_mode: state.workspaceMode,
+      sources: buildWorkspaceSourcesForMode({
+        workspaceMode: state.workspaceMode,
+        repos: state.repos.map((r) => ({
+          repo_id: r.repo.id,
+          target_branch: r.targetBranch ?? '',
+        })),
+        directorySource: state.directorySource,
+      }),
       executor_config: state.executorConfig ?? null,
       linked_issue: state.linkedIssue
         ? {
@@ -539,6 +584,8 @@ export function useCreateModeState({
   }, [
     state.phase,
     state.message,
+    state.workspaceMode,
+    state.directorySource,
     state.repos,
     state.linkedIssue,
     state.executorConfig,
@@ -593,6 +640,17 @@ export function useCreateModeState({
   // ============================================================================
   // Actions
   // ============================================================================
+  const setWorkspaceMode = useCallback((workspaceMode: WorkspaceMode) => {
+    dispatch({ type: 'SET_WORKSPACE_MODE', workspaceMode });
+  }, []);
+
+  const setDirectorySource = useCallback(
+    (directorySource: DirectoryWorkspaceSourceInput | null) => {
+      dispatch({ type: 'SET_DIRECTORY_SOURCE', directorySource });
+    },
+    []
+  );
+
   const setMessage = useCallback((message: string) => {
     dispatch({ type: 'SET_MESSAGE', message });
   }, []);
@@ -639,6 +697,8 @@ export function useCreateModeState({
   );
 
   return {
+    workspaceMode: state.workspaceMode,
+    directorySource: state.directorySource,
     repos,
     targetBranches,
     hasResolvedInitialRepoDefaults,
@@ -648,6 +708,8 @@ export function useCreateModeState({
     hasInitialValue: state.phase === 'ready',
     linkedIssue: state.linkedIssue,
     executorConfig: state.executorConfig,
+    setWorkspaceMode,
+    setDirectorySource,
     setMessage,
     addRepo,
     removeRepo,

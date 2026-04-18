@@ -14,6 +14,7 @@ use ts_rs::TS;
 use utils::response::ApiResponse;
 use uuid::Uuid;
 
+use super::capabilities::workspace_capabilities;
 use crate::{DeploymentImpl, error::ApiError};
 
 /// Request for fetching workspace summaries
@@ -119,7 +120,9 @@ pub async fn get_workspace_summaries(
             let workspace = ws.clone();
             let deployment = deployment.clone();
             async move {
-                if workspace.container_ref.is_some() {
+                if workspace.container_ref.is_some()
+                    && workspace_capabilities(&workspace).supports_git_read
+                {
                     compute_workspace_diff_stats(&deployment, &workspace)
                         .await
                         .map(|stats| (workspace.id, stats))
@@ -185,4 +188,103 @@ pub async fn compute_workspace_diff_stats(
         lines_added: stats.lines_added,
         lines_removed: stats.lines_removed,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{fs, path::PathBuf};
+
+    use axum::Router;
+    use db::models::workspace::{CreateWorkspace, WorkspaceMode};
+    use deployment::Deployment;
+    use tokio::net::TcpListener;
+    use utils::response::ApiResponse;
+    use uuid::Uuid;
+
+    use super::*;
+    use crate::{DeploymentImpl, test_support::TestAssetDirGuard};
+
+    async fn start_app() -> (
+        TestAssetDirGuard,
+        DeploymentImpl,
+        String,
+        tokio::task::JoinHandle<()>,
+    ) {
+        let (asset_guard, deployment) = crate::test_support::new_test_deployment().await;
+
+        let app = Router::new()
+            .nest("/api", super::super::router(&deployment))
+            .with_state(deployment.clone());
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+
+        (asset_guard, deployment, format!("http://{address}"), server)
+    }
+
+    fn temp_workspace_root(prefix: &str) -> PathBuf {
+        std::env::temp_dir().join(format!("{prefix}-{}", Uuid::new_v4()))
+    }
+
+    #[tokio::test]
+    async fn get_workspace_summaries_leaves_diff_fields_empty_for_in_place_directory_workspaces() {
+        let (_asset_guard, deployment, base_url, server) = start_app().await;
+        let workspace_id = Uuid::new_v4();
+        let workspace = Workspace::create(
+            &deployment.db().pool,
+            &CreateWorkspace {
+                branch: format!("workspace-summary-test-{workspace_id}"),
+                workspace_mode: WorkspaceMode::InPlaceDirectory,
+                name: Some("Workspace summary non-git test".to_string()),
+            },
+            workspace_id,
+        )
+        .await
+        .unwrap();
+        let workspace_root = temp_workspace_root("workspace-summary-non-git");
+        fs::create_dir_all(&workspace_root).unwrap();
+        Workspace::update_container_ref(
+            &deployment.db().pool,
+            workspace.id,
+            &workspace_root.to_string_lossy(),
+        )
+        .await
+        .unwrap();
+
+        let response = reqwest::Client::new()
+            .post(format!("{base_url}/api/workspaces/summaries"))
+            .json(&WorkspaceSummaryRequest { archived: false })
+            .send()
+            .await
+            .unwrap();
+
+        let status = response.status();
+        let payload: ApiResponse<serde_json::Value> = response.json().await.unwrap();
+
+        server.abort();
+        let _ = server.await;
+        let _ = Workspace::delete(&deployment.db().pool, workspace.id).await;
+        let _ = fs::remove_dir_all(&workspace_root);
+
+        assert!(status.is_success());
+        let response_data = payload.into_data().unwrap();
+        let summaries = response_data
+            .get("summaries")
+            .and_then(|value| value.as_array())
+            .unwrap();
+        let workspace_id = workspace.id.to_string();
+        let summary = summaries
+            .iter()
+            .find(|summary| {
+                summary.get("workspace_id").and_then(|value| value.as_str())
+                    == Some(workspace_id.as_str())
+            })
+            .unwrap();
+        assert!(summary.get("files_changed").unwrap().is_null());
+        assert!(summary.get("lines_added").unwrap().is_null());
+        assert!(summary.get("lines_removed").unwrap().is_null());
+    }
 }

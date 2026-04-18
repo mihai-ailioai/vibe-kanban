@@ -1,7 +1,8 @@
 use chrono::{DateTime, Utc};
 use executors::actions::{ExecutorAction, ExecutorActionType};
 use serde::{Deserialize, Serialize};
-use sqlx::{FromRow, SqlitePool};
+use sqlx::{FromRow, SqlitePool, Type};
+use strum_macros::{Display, EnumString};
 use thiserror::Error;
 use ts_rs::TS;
 use uuid::Uuid;
@@ -14,6 +15,31 @@ use super::{
     session::Session,
     workspace_repo::{RepoWithTargetBranch, WorkspaceRepo},
 };
+
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    Default,
+    PartialEq,
+    Eq,
+    Type,
+    Serialize,
+    Deserialize,
+    TS,
+    EnumString,
+    Display,
+)]
+#[sqlx(type_name = "workspace_mode", rename_all = "snake_case")]
+#[serde(rename_all = "snake_case")]
+#[ts(rename_all = "snake_case")]
+#[strum(serialize_all = "snake_case")]
+pub enum WorkspaceMode {
+    #[default]
+    GitWorktree,
+    InPlaceGit,
+    InPlaceDirectory,
+}
 
 #[derive(Debug, Error)]
 pub enum WorkspaceError {
@@ -44,6 +70,7 @@ pub struct Workspace {
     pub task_id: Option<Uuid>,
     pub container_ref: Option<String>,
     pub branch: String,
+    pub workspace_mode: WorkspaceMode,
     pub setup_completed_at: Option<DateTime<Utc>>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
@@ -84,6 +111,7 @@ pub struct WorkspaceContext {
 #[derive(Debug, Deserialize, TS)]
 pub struct CreateWorkspace {
     pub branch: String,
+    pub workspace_mode: WorkspaceMode,
     pub name: Option<String>,
 }
 
@@ -96,6 +124,7 @@ impl Workspace {
                           task_id AS "task_id: Uuid",
                           container_ref,
                           branch,
+                          workspace_mode as "workspace_mode!: WorkspaceMode",
                           setup_completed_at AS "setup_completed_at: DateTime<Utc>",
                           created_at AS "created_at!: DateTime<Utc>",
                           updated_at AS "updated_at!: DateTime<Utc>",
@@ -198,6 +227,7 @@ impl Workspace {
                        task_id           AS "task_id: Uuid",
                        container_ref,
                        branch,
+                       workspace_mode    AS "workspace_mode!: WorkspaceMode",
                        setup_completed_at AS "setup_completed_at: DateTime<Utc>",
                        created_at        AS "created_at!: DateTime<Utc>",
                        updated_at        AS "updated_at!: DateTime<Utc>",
@@ -220,6 +250,7 @@ impl Workspace {
                        task_id           AS "task_id: Uuid",
                        container_ref,
                        branch,
+                       workspace_mode    AS "workspace_mode!: WorkspaceMode",
                        setup_completed_at AS "setup_completed_at: DateTime<Utc>",
                        created_at        AS "created_at!: DateTime<Utc>",
                        updated_at        AS "updated_at!: DateTime<Utc>",
@@ -263,6 +294,7 @@ impl Workspace {
                 w.task_id as "task_id: Uuid",
                 w.container_ref,
                 w.branch as "branch!",
+                w.workspace_mode as "workspace_mode!: WorkspaceMode",
                 w.setup_completed_at as "setup_completed_at: DateTime<Utc>",
                 w.created_at as "created_at!: DateTime<Utc>",
                 w.updated_at as "updated_at!: DateTime<Utc>",
@@ -313,15 +345,18 @@ impl Workspace {
         data: &CreateWorkspace,
         id: Uuid,
     ) -> Result<Self, WorkspaceError> {
+        let workspace_mode = data.workspace_mode;
+
         Ok(sqlx::query_as!(
             Workspace,
-            r#"INSERT INTO workspaces (id, task_id, container_ref, branch, setup_completed_at, name)
-               VALUES ($1, $2, $3, $4, $5, $6)
-               RETURNING id as "id!: Uuid", task_id as "task_id: Uuid", container_ref, branch, setup_completed_at as "setup_completed_at: DateTime<Utc>", created_at as "created_at!: DateTime<Utc>", updated_at as "updated_at!: DateTime<Utc>", archived as "archived!: bool", pinned as "pinned!: bool", name, worktree_deleted as "worktree_deleted!: bool""#,
+            r#"INSERT INTO workspaces (id, task_id, container_ref, branch, workspace_mode, setup_completed_at, name)
+               VALUES ($1, $2, $3, $4, $5, $6, $7)
+               RETURNING id as "id!: Uuid", task_id as "task_id: Uuid", container_ref, branch, workspace_mode as "workspace_mode!: WorkspaceMode", setup_completed_at as "setup_completed_at: DateTime<Utc>", created_at as "created_at!: DateTime<Utc>", updated_at as "updated_at!: DateTime<Utc>", archived as "archived!: bool", pinned as "pinned!: bool", name, worktree_deleted as "worktree_deleted!: bool""#,
             id,
             Option::<Uuid>::None,
             Option::<String>::None,
             data.branch,
+            workspace_mode,
             Option::<DateTime<Utc>>::None,
             data.name
         )
@@ -507,6 +542,7 @@ impl Workspace {
                 w.task_id AS "task_id: Uuid",
                 w.container_ref,
                 w.branch,
+                w.workspace_mode AS "workspace_mode!: WorkspaceMode",
                 w.setup_completed_at AS "setup_completed_at: DateTime<Utc>",
                 w.created_at AS "created_at!: DateTime<Utc>",
                 w.updated_at AS "updated_at!: DateTime<Utc>",
@@ -549,6 +585,7 @@ impl Workspace {
                     task_id: rec.task_id,
                     container_ref: rec.container_ref,
                     branch: rec.branch,
+                    workspace_mode: rec.workspace_mode,
                     setup_completed_at: rec.setup_completed_at,
                     created_at: rec.created_at,
                     updated_at: rec.updated_at,
@@ -601,6 +638,7 @@ impl Workspace {
                 w.task_id AS "task_id: Uuid",
                 w.container_ref,
                 w.branch,
+                w.workspace_mode AS "workspace_mode!: WorkspaceMode",
                 w.setup_completed_at AS "setup_completed_at: DateTime<Utc>",
                 w.created_at AS "created_at!: DateTime<Utc>",
                 w.updated_at AS "updated_at!: DateTime<Utc>",
@@ -646,6 +684,7 @@ impl Workspace {
                 task_id: rec.task_id,
                 container_ref: rec.container_ref,
                 branch: rec.branch,
+                workspace_mode: rec.workspace_mode,
                 setup_completed_at: rec.setup_completed_at,
                 created_at: rec.created_at,
                 updated_at: rec.updated_at,
@@ -672,9 +711,43 @@ impl Workspace {
 
 #[cfg(test)]
 mod tests {
+    use std::str::FromStr;
+
+    use sqlx::{ConnectOptions, SqlitePool, sqlite::SqliteConnectOptions};
+    use tokio::runtime::Builder;
     use uuid::Uuid;
 
-    use super::Workspace;
+    use super::{CreateWorkspace, Workspace, WorkspaceMode};
+
+    async fn test_pool() -> SqlitePool {
+        let db_path =
+            std::env::temp_dir().join(format!("db-workspace-tests-{}.sqlite", Uuid::new_v4()));
+        let database_url = format!("sqlite://{}", db_path.to_string_lossy());
+
+        let options = SqliteConnectOptions::from_str(&database_url)
+            .unwrap()
+            .create_if_missing(true)
+            .disable_statement_logging();
+
+        let pool = SqlitePool::connect_with(options).await.unwrap();
+        sqlx::query("PRAGMA foreign_keys = ON")
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::migrate!("./migrations").run(&pool).await.unwrap();
+        pool
+    }
+
+    fn run_async_test<F>(future: F)
+    where
+        F: std::future::Future<Output = ()>,
+    {
+        Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap()
+            .block_on(future);
+    }
 
     #[test]
     fn best_matching_container_ref_prefers_deepest_match() {
@@ -708,5 +781,72 @@ mod tests {
         );
 
         assert_eq!(selected, None);
+    }
+
+    #[test]
+    fn create_persists_default_workspace_mode() {
+        run_async_test(async {
+            let pool = test_pool().await;
+            let workspace_id = Uuid::new_v4();
+
+            Workspace::create(
+                &pool,
+                &CreateWorkspace {
+                    branch: format!("branch-{}", workspace_id),
+                    workspace_mode: WorkspaceMode::GitWorktree,
+                    name: Some("Workspace mode test".to_string()),
+                },
+                workspace_id,
+            )
+            .await
+            .unwrap();
+
+            let workspace_mode = sqlx::query_scalar::<_, String>(
+                "SELECT workspace_mode FROM workspaces WHERE id = ?",
+            )
+            .bind(workspace_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+
+            assert_eq!(workspace_mode, "git_worktree");
+        });
+    }
+
+    #[test]
+    fn workspace_sources_require_complete_git_source_fields() {
+        run_async_test(async {
+            let pool = test_pool().await;
+            let workspace_id = Uuid::new_v4();
+
+            Workspace::create(
+                &pool,
+                &CreateWorkspace {
+                    branch: format!("branch-{}", workspace_id),
+                    workspace_mode: WorkspaceMode::GitWorktree,
+                    name: Some("Workspace source constraint test".to_string()),
+                },
+                workspace_id,
+            )
+            .await
+            .unwrap();
+
+            let error = sqlx::query(
+                "INSERT INTO workspace_sources (id, workspace_id, source_type, position) VALUES (?, ?, ?, ?)",
+            )
+            .bind(Uuid::new_v4())
+            .bind(workspace_id)
+            .bind("git_repo")
+            .bind(0_i64)
+            .execute(&pool)
+            .await
+            .unwrap_err();
+
+            let message = error.to_string();
+            assert!(
+                message.contains("CHECK constraint failed"),
+                "unexpected error: {message}"
+            );
+        });
     }
 }

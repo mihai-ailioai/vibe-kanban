@@ -76,6 +76,7 @@ import {
   ContinueRebaseRequest,
   Session,
   Workspace,
+  WorkspaceCapabilities,
   StartReviewRequest,
   ReviewError,
   GitRemote,
@@ -533,6 +534,15 @@ export const workspacesApi = {
       `/api/workspaces/${workspaceId}/git/status`
     );
     return handleApiResponse<RepoBranchStatus[]>(response);
+  },
+
+  getCapabilities: async (
+    workspaceId: string
+  ): Promise<WorkspaceCapabilities> => {
+    const response = await makeRequest(
+      `/api/workspaces/${workspaceId}/capabilities`
+    );
+    return handleApiResponse<WorkspaceCapabilities>(response);
   },
 
   getRepos: async (workspaceId: string): Promise<RepoWithTargetBranch[]> => {

@@ -12,20 +12,20 @@ When you start a task, the main panel provides real-time visibility into everyth
 
 ## What Happens During Execution
 
-When you start a task attempt, Vibe Kanban orchestrates several steps to create an isolated environment and execute your task:
+When you start a task attempt, Vibe Kanban orchestrates several steps to prepare the workspace and execute your task:
 
-1. **Git Worktree Creation**: An isolated environment is created for this task attempt
+1. **Workspace Preparation**: Vibe Kanban prepares the workspace for this task attempt
 2. **Setup Scripts Run**: Any setup script defined in your project settings runs automatically
 3. **Agent Execution**: The coding agent processes your task using the title and description  
 4. **Real-time Monitoring**: Watch progress through streaming logs in the task interface
 5. **Follow-up Questions**: Continue the conversation after execution to refine results
 
-### Git Worktrees
+### Workspace Preparation
 
-Vibe Kanban uses Git worktrees to create isolated environments for each task attempt. These environments are ephemeral and automatically cleaned up after execution completes.
+Vibe Kanban prepares the workspace according to the mode you selected. In the default recommended `git_worktree` mode, it creates an isolated Git worktree for the task attempt. In `in_place_git` and `in_place_directory` modes, it runs in the checkout or folder you selected instead of creating another managed copy.
 
 <Info>
-Worktrees ensure task attempts don't interfere with each other or your main working directory.
+`git_worktree` mode gives you the strongest isolation. In in-place modes, the agent works directly in your selected directory.
 </Info>
 
 ## Execution Flow
