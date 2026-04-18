@@ -46,6 +46,36 @@ describe('workspaceCreateState', () => {
     expect('repos' in draftData).toBe(false);
   });
 
+  it('persists directory sources in draft data for in_place_directory mode', () => {
+    const draftData = toDraftWorkspaceData({
+      initialPrompt: 'Inspect this folder',
+      workspaceMode: 'in_place_directory',
+      preferredRepos: null,
+      workspaceSources: [
+        {
+          type: 'directory',
+          path: '/Users/mihai/project',
+          display_name: 'project',
+        },
+      ],
+      linkedIssue: null,
+      executorConfig: null,
+    });
+
+    expect(draftData).toMatchObject({
+      message: 'Inspect this folder',
+      workspace_mode: 'in_place_directory',
+      sources: [
+        {
+          type: 'directory',
+          path: '/Users/mihai/project',
+          display_name: 'project',
+        },
+      ],
+    });
+    expect('repos' in draftData).toBe(false);
+  });
+
   it('builds a strict source-only create workspace request for selected repos', () => {
     const executorConfig = {
       executor: 'CLAUDE_CODE',
@@ -56,12 +86,15 @@ describe('workspaceCreateState', () => {
       name: 'Task 6',
       prompt: 'Implement the contract migration',
       executorConfig,
-      repos: [
+      workspaceMode: 'git_worktree',
+      sources: [
         {
+          type: 'git_repo',
           repo_id: 'repo-1',
           target_branch: 'main',
         },
         {
+          type: 'git_repo',
           repo_id: 'repo-2',
           target_branch: 'develop',
         },
@@ -94,6 +127,45 @@ describe('workspaceCreateState', () => {
         remote_project_id: 'project-1',
       },
       attachment_ids: ['attachment-1'],
+    });
+    expect('repos' in request).toBe(false);
+  });
+
+  it('builds a directory-mode create workspace request from canonical sources', () => {
+    const executorConfig = {
+      executor: 'CLAUDE_CODE',
+      variant: 'DEFAULT',
+    } as ExecutorConfig;
+
+    const request = buildCreateWorkspaceRequest({
+      name: 'Directory workspace',
+      prompt: 'Work in place',
+      executorConfig,
+      workspaceMode: 'in_place_directory',
+      sources: [
+        {
+          type: 'directory',
+          path: '/Users/mihai/project',
+          display_name: 'project',
+        },
+      ],
+      linkedIssue: null,
+      attachmentIds: [],
+    });
+
+    expect(request).toMatchObject({
+      name: 'Directory workspace',
+      prompt: 'Work in place',
+      workspace_mode: 'in_place_directory',
+      sources: [
+        {
+          type: 'directory',
+          path: '/Users/mihai/project',
+          display_name: 'project',
+        },
+      ],
+      linked_issue: null,
+      attachment_ids: [],
     });
     expect('repos' in request).toBe(false);
   });

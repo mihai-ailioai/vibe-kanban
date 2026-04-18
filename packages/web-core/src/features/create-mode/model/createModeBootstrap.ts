@@ -3,6 +3,8 @@ import type {
   DraftWorkspaceAttachment,
   ExecutorConfig,
   Repo,
+  WorkspaceMode,
+  WorkspaceSourceInput,
 } from 'shared/types';
 import { repoApi } from '@/shared/lib/api';
 import type {
@@ -17,8 +19,10 @@ export interface BootstrapSelectedRepo {
 
 export interface CreateModeBootstrapData {
   message?: string;
+  workspaceMode?: WorkspaceMode;
   linkedIssue?: LinkedIssue | null;
   repos?: BootstrapSelectedRepo[];
+  directorySource?: Extract<WorkspaceSourceInput, { type: 'directory' }> | null;
   executorConfig?: ExecutorConfig | null;
   attachments?: DraftWorkspaceAttachment[];
 }
@@ -65,6 +69,37 @@ function getScratchGitRepos(
   }
 
   return [];
+}
+
+function getGitReposFromSources(
+  sources: WorkspaceSourceInput[] | null | undefined
+): PreferredRepoInput[] {
+  return (
+    sources
+      ?.filter(
+        (
+          source
+        ): source is Extract<WorkspaceSourceInput, { type: 'git_repo' }> =>
+          source.type === 'git_repo'
+      )
+      .map((source) => ({
+        repo_id: source.repo_id,
+        target_branch: source.target_branch ?? null,
+      })) ?? []
+  );
+}
+
+function getDirectorySource(
+  sources: WorkspaceSourceInput[] | null | undefined
+): Extract<WorkspaceSourceInput, { type: 'directory' }> | null {
+  return (
+    sources?.find(
+      (
+        source
+      ): source is Extract<WorkspaceSourceInput, { type: 'directory' }> =>
+        source.type === 'directory'
+    ) ?? null
+  );
 }
 
 export async function resolveBootstrapRepos(
@@ -114,14 +149,18 @@ export async function resolveCreateModeBootstrap({
   isValidProfile,
 }: ResolveCreateModeBootstrapParams): Promise<ResolveCreateModeBootstrapResult> {
   const hasInitialPrompt = !!seedState?.initialPrompt;
+  const hasWorkspaceMode = !!seedState?.workspaceMode;
   const hasLinkedIssue = !!seedState?.linkedIssue;
   const hasPreferredRepos = (seedState?.preferredRepos?.length ?? 0) > 0;
+  const hasWorkspaceSources = (seedState?.workspaceSources?.length ?? 0) > 0;
   const hasExecutorConfig = !!seedState?.executorConfig;
 
   if (
     hasInitialPrompt ||
+    hasWorkspaceMode ||
     hasLinkedIssue ||
     hasPreferredRepos ||
+    hasWorkspaceSources ||
     hasExecutorConfig
   ) {
     const data: CreateModeBootstrapData = {};
@@ -132,17 +171,32 @@ export async function resolveCreateModeBootstrap({
       appliedSeedState = true;
     }
 
+    if (hasWorkspaceMode) {
+      data.workspaceMode = seedState!.workspaceMode!;
+      appliedSeedState = true;
+    }
+
     if (hasLinkedIssue) {
       data.linkedIssue = seedState!.linkedIssue!;
       appliedSeedState = true;
     }
 
-    if (seedState?.preferredRepos && seedState.preferredRepos.length > 0) {
-      const resolvedRepos = await resolveBootstrapRepos(
-        seedState.preferredRepos
-      );
+    const seedGitRepos = seedState?.workspaceSources?.length
+      ? getGitReposFromSources(seedState.workspaceSources)
+      : (seedState?.preferredRepos ?? []);
+
+    if (seedGitRepos.length > 0) {
+      const resolvedRepos = await resolveBootstrapRepos(seedGitRepos);
       if (resolvedRepos.length > 0) {
         data.repos = resolvedRepos;
+        appliedSeedState = true;
+      }
+    }
+
+    if (seedState?.workspaceSources?.length) {
+      const directorySource = getDirectorySource(seedState.workspaceSources);
+      if (directorySource) {
+        data.directorySource = directorySource;
         appliedSeedState = true;
       }
     }
@@ -162,6 +216,11 @@ export async function resolveCreateModeBootstrap({
 
   if (scratchData) {
     const data: CreateModeBootstrapData = {};
+
+    data.workspaceMode =
+      ('workspace_mode' in scratchData
+        ? scratchData.workspace_mode
+        : undefined) ?? 'git_worktree';
 
     if (scratchData.message) {
       data.message = scratchData.message;
@@ -185,6 +244,13 @@ export async function resolveCreateModeBootstrap({
 
     if (scratchData.attachments?.length > 0) {
       data.attachments = scratchData.attachments;
+    }
+
+    if ('sources' in scratchData) {
+      const directorySource = getDirectorySource(scratchData.sources);
+      if (directorySource) {
+        data.directorySource = directorySource;
+      }
     }
 
     const scratchGitRepos = getScratchGitRepos(scratchData);

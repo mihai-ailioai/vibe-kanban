@@ -4,7 +4,9 @@ import type {
   DraftWorkspaceAttachment,
   Repo,
   ExecutorConfig,
+  WorkspaceMode,
 } from 'shared/types';
+import type { DirectoryWorkspaceSourceInput } from '@/shared/lib/workspaceCreateState';
 
 interface LinkedIssue {
   issueId: string;
@@ -14,6 +16,12 @@ interface LinkedIssue {
 }
 
 export interface CreateModeContextValue {
+  workspaceMode: WorkspaceMode;
+  setWorkspaceMode: (workspaceMode: WorkspaceMode) => void;
+  directorySource: DirectoryWorkspaceSourceInput | null;
+  setDirectorySource: (
+    directorySource: DirectoryWorkspaceSourceInput | null
+  ) => void;
   repos: Repo[];
   addRepo: (repo: Repo) => void;
   removeRepo: (repoId: string) => void;

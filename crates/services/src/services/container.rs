@@ -1185,7 +1185,7 @@ pub trait ContainerService {
         // Capture current HEAD per repository as the "before" commit for this execution
         let repositories =
             WorkspaceRepo::find_repos_for_workspace(&self.db().pool, workspace.id).await?;
-        if repositories.is_empty() {
+        if repositories.is_empty() && workspace.workspace_mode != WorkspaceMode::InPlaceDirectory {
             return Err(ContainerError::Other(anyhow!(
                 "Workspace has no repositories configured"
             )));
@@ -1424,12 +1424,15 @@ mod tests {
                 CreateExecutionProcess, ExecutionProcess, ExecutionProcessRunReason,
             },
             session::CreateSession,
-            workspace::{CreateWorkspace, Workspace, WorkspaceMode},
+            workspace::{CreateWorkspace, Workspace as DbWorkspace, Workspace, WorkspaceMode},
         },
     };
-    use executors::actions::{
-        ExecutorAction, ExecutorActionType,
-        script::{ScriptContext, ScriptRequest, ScriptRequestLanguage},
+    use executors::{
+        actions::{
+            ExecutorAction, ExecutorActionType,
+            script::{ScriptContext, ScriptRequest, ScriptRequestLanguage},
+        },
+        profile::ExecutorConfig,
     };
     use futures::stream::BoxStream;
     use git::GitService;
@@ -1489,7 +1492,11 @@ mod tests {
         }
 
         async fn create(&self, _workspace: &Workspace) -> Result<ContainerRef, ContainerError> {
-            Ok(String::new())
+            let container_ref = "/tmp/mock-workspace".to_string();
+            DbWorkspace::update_container_ref(&self.db.pool, _workspace.id, &container_ref)
+                .await
+                .map_err(ContainerError::from)?;
+            Ok(container_ref)
         }
 
         async fn kill_all_running_processes(&self) -> Result<(), ContainerError> {
@@ -1662,5 +1669,44 @@ mod tests {
         service.try_stop(&workspace, false).await;
 
         assert!(!after_stop_called.load(Ordering::SeqCst));
+    }
+
+    #[tokio::test]
+    async fn start_workspace_allows_in_place_directory_without_attached_repos() {
+        let msg_stores = Arc::new(RwLock::new(HashMap::new()));
+        let db = DBService::new().await.unwrap();
+        let notification_service =
+            NotificationService::new(Arc::new(RwLock::new(Config::default())));
+        let service = MockContainerService {
+            msg_stores,
+            db: db.clone(),
+            git: GitService::new(),
+            notification_service,
+            after_stop_called: Arc::new(AtomicBool::new(false)),
+            fail_stop_execution: false,
+        };
+
+        let workspace_id = Uuid::new_v4();
+        let workspace = Workspace::create(
+            &db.pool,
+            &CreateWorkspace {
+                branch: format!("workspace-{workspace_id}"),
+                workspace_mode: WorkspaceMode::InPlaceDirectory,
+                name: Some("Directory workspace".to_string()),
+            },
+            workspace_id,
+        )
+        .await
+        .unwrap();
+
+        let execution = service
+            .start_workspace(
+                &workspace,
+                ExecutorConfig::new("CODEX".parse().unwrap()),
+                "Inspect this directory".to_string(),
+            )
+            .await;
+
+        assert!(execution.is_ok());
     }
 }

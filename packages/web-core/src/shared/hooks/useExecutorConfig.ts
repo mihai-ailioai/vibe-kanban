@@ -6,6 +6,7 @@ import type {
   ExecutorProfileId,
 } from 'shared/types';
 import { getVariantOptions } from '@/shared/lib/executor';
+import { resolveExecutorConfigForSelection } from '@/shared/lib/executorSelection';
 import { usePresetOptions } from '@/shared/hooks/usePresetOptions';
 
 function getProfileKey(
@@ -269,12 +270,15 @@ export function useExecutorConfig({
   const setExecutor = useCallback(
     (exec: BaseCodingAgent) => {
       setUserSelections({ executor: exec });
-      // Persist with auto-resolved variant (no overrides)
-      const newVariants = getVariantOptions(exec, profiles);
-      const newVariant = newVariants[0] ?? null;
-      persist({ executor: exec, variant: newVariant });
+      persist(
+        resolveExecutorConfigForSelection({
+          executor: exec,
+          profiles,
+          configExecutorProfile,
+        })
+      );
     },
-    [profiles, persist]
+    [profiles, configExecutorProfile, persist]
   );
 
   // Setting variant → keeps executor, sets variant, clears all override fields.

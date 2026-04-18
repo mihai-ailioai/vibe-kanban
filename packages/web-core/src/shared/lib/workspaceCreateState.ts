@@ -26,10 +26,15 @@ interface LinkedIssueSource {
   title: string;
 }
 
-interface RepoSelectionInput {
+export interface RepoSelectionInput {
   repo_id: string;
   target_branch: string;
 }
+
+export type DirectoryWorkspaceSourceInput = Extract<
+  WorkspaceSourceInput,
+  { type: 'directory' }
+>;
 
 interface LinkedIssueRequestInput {
   issueId: string;
@@ -49,6 +54,23 @@ export function toGitRepoWorkspaceSources(
     repo_id: repo.repo_id,
     target_branch: repo.target_branch,
   }));
+}
+
+export function buildWorkspaceSourcesForMode(args: {
+  workspaceMode: WorkspaceMode;
+  repos?: RepoSelectionInput[];
+  directorySource?: DirectoryWorkspaceSourceInput | null;
+  workspaceSources?: WorkspaceSourceInput[] | null;
+}): WorkspaceSourceInput[] {
+  if (args.workspaceSources) {
+    return args.workspaceSources;
+  }
+
+  if (args.workspaceMode === 'in_place_directory') {
+    return args.directorySource ? [args.directorySource] : [];
+  }
+
+  return toGitRepoWorkspaceSources(args.repos ?? []);
 }
 
 export function buildWorkspaceCreatePrompt(
@@ -86,6 +108,12 @@ export function buildWorkspaceCreateInitialState(args: {
   return {
     initialPrompt: args.prompt,
     workspaceMode: DEFAULT_CREATE_MODE_WORKSPACE_MODE,
+    workspaceSources: toGitRepoWorkspaceSources(
+      args.defaults?.preferredRepos?.map((repo) => ({
+        repo_id: repo.repo_id,
+        target_branch: repo.target_branch ?? '',
+      })) ?? []
+    ),
     preferredRepos: args.defaults?.preferredRepos ?? null,
     project_id: args.defaults?.project_id ?? null,
     linkedIssue: args.linkedIssue ?? null,
@@ -112,12 +140,15 @@ export function toDraftWorkspaceData(
   return {
     message: initialState.initialPrompt ?? '',
     workspace_mode: workspaceMode,
-    sources: toGitRepoWorkspaceSources(
-      initialState.preferredRepos?.map((repo) => ({
-        repo_id: repo.repo_id,
-        target_branch: repo.target_branch ?? '',
-      })) ?? []
-    ),
+    sources: buildWorkspaceSourcesForMode({
+      workspaceMode,
+      repos:
+        initialState.preferredRepos?.map((repo) => ({
+          repo_id: repo.repo_id,
+          target_branch: repo.target_branch ?? '',
+        })) ?? [],
+      workspaceSources: initialState.workspaceSources ?? null,
+    }),
     executor_config: initialState.executorConfig ?? null,
     linked_issue: initialState.linkedIssue
       ? {
@@ -135,7 +166,8 @@ export function buildCreateWorkspaceRequest(args: {
   name: string | null;
   prompt: string;
   executorConfig: ExecutorConfig;
-  repos: RepoSelectionInput[];
+  workspaceMode: WorkspaceMode;
+  sources: WorkspaceSourceInput[];
   linkedIssue?: LinkedIssueRequestInput | null;
   attachmentIds: string[];
 }): CreateAndStartWorkspaceRequest {
@@ -143,8 +175,8 @@ export function buildCreateWorkspaceRequest(args: {
     name: args.name,
     prompt: args.prompt,
     executor_config: args.executorConfig,
-    workspace_mode: DEFAULT_CREATE_MODE_WORKSPACE_MODE,
-    sources: toGitRepoWorkspaceSources(args.repos),
+    workspace_mode: args.workspaceMode,
+    sources: args.sources,
     linked_issue: args.linkedIssue
       ? {
           remote_project_id: args.linkedIssue.remoteProjectId,
