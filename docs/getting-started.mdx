@@ -70,7 +70,7 @@ When you've filled out the details press 'create issue'.
 
 ## 6. Create a workspace
 
-**Workspaces** are another core concept of Vibe Kanban, they represent a space to work on an issue with a coding agent. When you create a workspace, Vibe Kanban automatically creates git worktrees for your selected repositories, and launches your coding agent.
+**Workspaces** are another core concept of Vibe Kanban, they represent a space to work on an issue with a coding agent. When you create a workspace, Vibe Kanban uses the workspace mode you selected, then launches your coding agent.
 
 <Frame>
   <img src="/images/onboarding-create-workspace.png" alt="The create workspace button" />
@@ -82,7 +82,7 @@ To create a workspace, make sure the issue you created is selected and click the
   <img src="/images/onboarding-workspaces-repo.png" alt="Workspaces repos" />
 </Frame>
 
-When you create a workspace, you'll need to specify repositories you'd like to work on, as well as the branches of those repositories to base the git worktrees on.
+When you create a workspace, you first choose a workspace mode. In the default recommended `git_worktree` mode, you select the repositories you want to work on and the target branches to base the managed worktrees on. Other modes let you work in an existing Git checkout or a plain directory.
 
 <Frame>
   <img src="/images/onboarding-workspaces-prompt.png" alt="Workspaces prompt" />

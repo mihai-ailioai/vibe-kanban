@@ -155,6 +155,10 @@ The `repositories` parameter is an array of objects with:
 
 When `issue_id` is provided, the workspace is automatically linked to the remote issue. If `prompt` is omitted, the linked issue's title and description are used as the workspace prompt.
 
+<Info>
+The MCP user experience stays repository-based. Internally, Vibe Kanban converts each `repositories` entry into the local API's canonical Git `sources` payload and sets `workspace_mode` to the default recommended `git_worktree` mode before it creates the workspace. MCP does not currently expose a separate workspace mode selector.
+</Info>
+
 ### Supported Executors
 
 When using `start_workspace`, the following executors are supported (case-insensitive, accepts hyphens or underscores):
@@ -176,7 +180,7 @@ Once you have the MCP server configured, you can leverage it to streamline your 
 1. **Plan Your Work**: Describe a large feature or project to your MCP client
 2. **Request Issue Creation**: At the end of your description, simply add "then turn this plan into issues"
 3. **Automatic Issue Generation**: Your MCP client will use the Vibe Kanban MCP server to automatically create structured issues in your project
-4. **Start Workspaces**: Use `start_workspace` to programmatically begin work on issues with specific coding agents
+4. **Start Workspaces**: Use `start_workspace` to programmatically begin work on issues with specific coding agents in the default recommended `git_worktree` mode
 
 ## Example Usage
 
@@ -218,7 +222,7 @@ Your MCP client will use the `start_workspace` tool with parameters like:
 }
 ```
 
-This creates a new workspace, links it to the issue, generates a feature branch, and starts the coding agent in an isolated environment.
+This creates a new workspace in the default recommended `git_worktree` mode, links it to the issue, creates a working branch from the target branch, and starts the coding agent in a managed Git worktree environment.
 
 ### Complete Workflow Example
 
@@ -231,7 +235,7 @@ This creates a new workspace, links it to the issue, generates a feature branch,
 6. Start a workspace session for the issue using Amp on the develop branch
 ```
 
-Each step uses the appropriate MCP tool (`list_organizations`, `list_projects`, `list_issues`, `create_issue`, `assign_issue`, `start_workspace`) to manage the complete workflow from planning to execution.
+Each step uses the appropriate MCP tool (`list_organizations`, `list_projects`, `list_issues`, `create_issue`, `assign_issue`, `start_workspace`) to manage the complete workflow from planning to execution. In the final step, `start_workspace` still takes `repositories`, then creates the workspace in the default recommended `git_worktree` mode behind the scenes.
 
 ### Internal Coding Agents (Within Vibe Kanban)
 

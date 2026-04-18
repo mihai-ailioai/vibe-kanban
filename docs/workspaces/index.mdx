@@ -12,7 +12,7 @@ The Workspaces UI is a complete redesign of the task execution experience, provi
 
 ## What is a Workspace?
 
-A **workspace** is an isolated environment for completing a coding task. Think of it as a dedicated "project room" where you:
+A **workspace** is a dedicated environment for completing a coding task. Depending on how you create it, a workspace can use a managed git worktree, an existing git checkout, or a plain directory. `git_worktree` gives you the strongest isolation because it keeps your original checkout untouched. Think of it as a dedicated "project room" where you:
 
 1. **Work on a specific task** - Each workspace focuses on one goal (e.g., "Add user authentication")
 2. **Chat with coding agents** - AI assistants that write and modify code for you
@@ -77,14 +77,15 @@ For example, you create a workspace for "Add authentication" that includes both 
 
 <AccordionGroup>
 <Accordion title="What happens to my code when I create a workspace?">
-When you create a workspace, Vibe Kanban:
+When you create a workspace, Vibe Kanban uses the workspace mode you selected:
 
-1. Creates a **git worktree** - a separate working directory linked to a new branch
-2. Your original repository stays untouched
-3. All changes happen in the worktree on a new branch
-4. Nothing is pushed to remote until you explicitly create a PR
+- **`git_worktree` (recommended)** creates a managed git worktree on a new working branch. This is the best default for most software tasks because it keeps your original checkout untouched.
+- **`in_place_git`** uses your existing git checkout directly. Choose this only when you intentionally want to work inside the repo folder that already exists on disk.
+- **`in_place_directory`** uses a plain folder without Git integration. Choose this for Unity projects or other directories that are not git repositories.
 
-**Your main branch is safe.** The workspace isolates all changes until you're ready to merge.
+Git actions only appear when the workspace mode supports them. In non-Git-capable modes, actions such as branch management, pull requests, and other unsupported Git flows are hidden or unavailable.
+
+Nothing is pushed to a remote unless you choose to do that intentionally.
 </Accordion>
 
 <Accordion title="Can I work on multiple tasks at once?">
@@ -125,4 +126,3 @@ If the agent needs your input (approval, clarification), you'll see a "Needs Att
 Think of it this way: A Project is like a team folder that contains your repos. A Workspace is a task you're working on using those repos.
 </Accordion>
 </AccordionGroup>
-
