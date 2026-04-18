@@ -198,17 +198,19 @@ mod tests {
     use db::models::workspace::{CreateWorkspace, WorkspaceMode};
     use deployment::Deployment;
     use tokio::net::TcpListener;
-    use tokio_util::sync::CancellationToken;
     use utils::response::ApiResponse;
     use uuid::Uuid;
 
     use super::*;
-    use crate::DeploymentImpl;
+    use crate::{DeploymentImpl, test_support::TestAssetDirGuard};
 
-    async fn start_app() -> (DeploymentImpl, String, tokio::task::JoinHandle<()>) {
-        let deployment = <DeploymentImpl as Deployment>::new(CancellationToken::new())
-            .await
-            .unwrap();
+    async fn start_app() -> (
+        TestAssetDirGuard,
+        DeploymentImpl,
+        String,
+        tokio::task::JoinHandle<()>,
+    ) {
+        let (asset_guard, deployment) = crate::test_support::new_test_deployment().await;
 
         let app = Router::new()
             .nest("/api", super::super::router(&deployment))
@@ -220,7 +222,7 @@ mod tests {
             axum::serve(listener, app).await.unwrap();
         });
 
-        (deployment, format!("http://{address}"), server)
+        (asset_guard, deployment, format!("http://{address}"), server)
     }
 
     fn temp_workspace_root(prefix: &str) -> PathBuf {
@@ -229,7 +231,7 @@ mod tests {
 
     #[tokio::test]
     async fn get_workspace_summaries_leaves_diff_fields_empty_for_in_place_directory_workspaces() {
-        let (deployment, base_url, server) = start_app().await;
+        let (_asset_guard, deployment, base_url, server) = start_app().await;
         let workspace_id = Uuid::new_v4();
         let workspace = Workspace::create(
             &deployment.db().pool,

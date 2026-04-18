@@ -1441,7 +1441,10 @@ mod tests {
     use uuid::Uuid;
 
     use super::{ContainerError, ContainerRef, ContainerService};
-    use crate::services::{config::Config, notification::NotificationService};
+    use crate::{
+        services::{config::Config, notification::NotificationService},
+        test_support::isolated_test_db,
+    };
 
     struct MockContainerService {
         msg_stores: Arc<RwLock<HashMap<Uuid, Arc<MsgStore>>>>,
@@ -1571,7 +1574,7 @@ mod tests {
     #[tokio::test]
     async fn try_stop_invokes_after_workspace_stopped_hook() {
         let msg_stores = Arc::new(RwLock::new(HashMap::new()));
-        let db = DBService::new().await.unwrap();
+        let db = isolated_test_db().await;
         let notification_service =
             NotificationService::new(Arc::new(RwLock::new(Config::default())));
         let after_stop_called = Arc::new(AtomicBool::new(false));
@@ -1607,7 +1610,7 @@ mod tests {
     #[tokio::test]
     async fn try_stop_does_not_invoke_after_workspace_stopped_hook_when_stop_fails() {
         let msg_stores = Arc::new(RwLock::new(HashMap::new()));
-        let db = DBService::new().await.unwrap();
+        let db = isolated_test_db().await;
         let notification_service =
             NotificationService::new(Arc::new(RwLock::new(Config::default())));
         let after_stop_called = Arc::new(AtomicBool::new(false));
@@ -1674,7 +1677,7 @@ mod tests {
     #[tokio::test]
     async fn start_workspace_allows_in_place_directory_without_attached_repos() {
         let msg_stores = Arc::new(RwLock::new(HashMap::new()));
-        let db = DBService::new().await.unwrap();
+        let db = isolated_test_db().await;
         let notification_service =
             NotificationService::new(Arc::new(RwLock::new(Config::default())));
         let service = MockContainerService {

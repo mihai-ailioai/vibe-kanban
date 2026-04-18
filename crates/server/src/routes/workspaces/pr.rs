@@ -864,16 +864,18 @@ mod tests {
     use db::models::workspace::{CreateWorkspace, Workspace, WorkspaceMode};
     use deployment::Deployment;
     use tokio::net::TcpListener;
-    use tokio_util::sync::CancellationToken;
     use utils::response::ApiResponse;
     use uuid::Uuid;
 
-    use crate::DeploymentImpl;
+    use crate::{DeploymentImpl, test_support::TestAssetDirGuard};
 
-    async fn start_app() -> (DeploymentImpl, String, tokio::task::JoinHandle<()>) {
-        let deployment = <DeploymentImpl as Deployment>::new(CancellationToken::new())
-            .await
-            .unwrap();
+    async fn start_app() -> (
+        TestAssetDirGuard,
+        DeploymentImpl,
+        String,
+        tokio::task::JoinHandle<()>,
+    ) {
+        let (asset_guard, deployment) = crate::test_support::new_test_deployment().await;
 
         let app = Router::new()
             .nest("/api", super::super::router(&deployment))
@@ -885,7 +887,7 @@ mod tests {
             axum::serve(listener, app).await.unwrap();
         });
 
-        (deployment, format!("http://{address}"), server)
+        (asset_guard, deployment, format!("http://{address}"), server)
     }
 
     async fn create_workspace(
@@ -907,7 +909,7 @@ mod tests {
 
     #[tokio::test]
     async fn create_pr_rejects_in_place_directory_mode() {
-        let (deployment, base_url, server) = start_app().await;
+        let (_asset_guard, deployment, base_url, server) = start_app().await;
         let workspace = create_workspace(&deployment, WorkspaceMode::InPlaceDirectory).await;
 
         let response = reqwest::Client::new()

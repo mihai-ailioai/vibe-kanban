@@ -106,13 +106,11 @@ fn workspace_supports_git_read(workspace: &Workspace) -> bool {
 mod tests {
     use std::{fs, path::PathBuf};
 
-    use db::{
-        DBService,
-        models::workspace::{CreateWorkspace, Workspace, WorkspaceMode},
-    };
+    use db::models::workspace::{CreateWorkspace, Workspace, WorkspaceMode};
     use uuid::Uuid;
 
     use super::*;
+    use crate::test_support::isolated_test_db;
 
     fn temp_workspace_root(prefix: &str) -> PathBuf {
         std::env::temp_dir().join(format!("{prefix}-{}", Uuid::new_v4()))
@@ -120,7 +118,7 @@ mod tests {
 
     #[tokio::test]
     async fn compute_diff_stats_returns_none_for_in_place_directory_workspaces() {
-        let db = DBService::new().await.unwrap();
+        let db = isolated_test_db().await;
         let workspace_id = Uuid::new_v4();
         let workspace = Workspace::create(
             &db.pool,

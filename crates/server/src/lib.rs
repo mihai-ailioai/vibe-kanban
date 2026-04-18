@@ -5,6 +5,9 @@ pub mod routes;
 pub mod runtime;
 pub mod startup;
 
+#[cfg(test)]
+pub mod test_support;
+
 // #[cfg(feature = "cloud")]
 // type DeploymentImpl = vibe_kanban_cloud::deployment::CloudDeployment;
 // #[cfg(not(feature = "cloud"))]

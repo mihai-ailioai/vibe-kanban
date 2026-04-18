@@ -111,13 +111,10 @@ mod tests {
     use db::models::workspace::{CreateWorkspace, Workspace, WorkspaceMode};
     use deployment::Deployment;
     use tokio::net::TcpListener;
-    use tokio_util::sync::CancellationToken;
     use utils::response::ApiResponse;
     use uuid::Uuid;
 
     use super::*;
-    use crate::DeploymentImpl;
-
     fn sample_workspace(workspace_mode: WorkspaceMode) -> Workspace {
         Workspace {
             id: Uuid::new_v4(),
@@ -200,9 +197,7 @@ mod tests {
 
     #[tokio::test]
     async fn get_workspace_capabilities_returns_in_place_git_matrix() {
-        let deployment = <DeploymentImpl as Deployment>::new(CancellationToken::new())
-            .await
-            .unwrap();
+        let (_asset_guard, deployment) = crate::test_support::new_test_deployment().await;
         let workspace = Workspace::create(
             &deployment.db().pool,
             &CreateWorkspace {
