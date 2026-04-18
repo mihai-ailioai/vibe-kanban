@@ -17,6 +17,7 @@ import {
   buildWorkspaceCreateInitialState,
   buildWorkspaceCreatePrompt,
 } from '@/shared/lib/workspaceCreateState';
+import { loadDeleteWorkspaceDialogState } from '@/shared/lib/deleteWorkspaceDialogState';
 import { ConfirmDialog } from '@vibe/ui/components/ConfirmDialog';
 import { DeleteWorkspaceDialog } from '@vibe/ui/components/DeleteWorkspaceDialog';
 import type { WorkspaceWithStats } from '@vibe/ui/components/IssueWorkspaceCard';
@@ -248,14 +249,18 @@ export function IssueWorkspacesSectionContainer({
         return;
       }
 
+      const deleteDialogState = await loadDeleteWorkspaceDialogState({
+        getWorkspace: async () => localWorkspace,
+        getCapabilities: async () =>
+          workspacesApi.getCapabilities(localWorkspaceId),
+        getBranchStatus: async () =>
+          workspacesApi.getBranchStatus(localWorkspaceId),
+      });
+
       const result = await DeleteWorkspaceDialog.show({
-        branchName: localWorkspace.branch,
-        hasOpenPR:
-          workspacesWithStats
-            .find(
-              (workspace) => workspace.localWorkspaceId === localWorkspaceId
-            )
-            ?.prs.some((pr) => pr.status === 'open') ?? false,
+        branchName: deleteDialogState.branchName,
+        hasOpenPR: deleteDialogState.hasOpenPR,
+        supportsDeleteBranches: deleteDialogState.supportsDeleteBranches,
         isLinkedToIssue: true,
         linkedIssueSimpleId: getIssue(issueId)?.simple_id,
       });
@@ -283,7 +288,7 @@ export function IssueWorkspacesSectionContainer({
         });
       }
     },
-    [localWorkspacesById, workspacesWithStats, t, issueId, getIssue]
+    [localWorkspacesById, t, issueId, getIssue]
   );
 
   // Actions for the section header

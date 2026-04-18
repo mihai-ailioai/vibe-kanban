@@ -75,6 +75,7 @@ import { SettingsDialog } from '@/shared/dialogs/settings/SettingsDialog';
 import { CreateWorkspaceFromPrDialog } from '@/shared/dialogs/command-bar/CreateWorkspaceFromPrDialog';
 import { buildWorkspaceCreateInitialState } from '@/shared/lib/workspaceCreateState';
 import { setCreateModeSeedState } from '@/features/create-mode/model/createModeSeedStore';
+import { loadDeleteWorkspaceDialogState } from '@/shared/lib/deleteWorkspaceDialogState';
 
 // Mirrored sidebar icon for right sidebar toggle
 const RightSidebarIcon: Icon = forwardRef<SVGSVGElement, IconProps>(
@@ -297,16 +298,16 @@ export const Actions = {
       const linkedIssueSimpleId = remoteWs?.issue_id
         ? ctx.projectMutations?.getIssue(remoteWs.issue_id)?.simple_id
         : undefined;
-      const branchStatus = await workspacesApi.getBranchStatus(workspaceId);
-      const hasOpenPR = branchStatus.some((repoStatus) =>
-        repoStatus.merges?.some(
-          (m: Merge) => m.type === 'pr' && m.pr_info.status === 'open'
-        )
-      );
+      const deleteDialogState = await loadDeleteWorkspaceDialogState({
+        getWorkspace: async () => workspace,
+        getCapabilities: async () => workspacesApi.getCapabilities(workspaceId),
+        getBranchStatus: async () => workspacesApi.getBranchStatus(workspaceId),
+      });
 
       const result = await DeleteWorkspaceDialog.show({
-        branchName: workspace.branch,
-        hasOpenPR,
+        branchName: deleteDialogState.branchName,
+        hasOpenPR: deleteDialogState.hasOpenPR,
+        supportsDeleteBranches: deleteDialogState.supportsDeleteBranches,
         isLinkedToIssue: Boolean(remoteWs?.issue_id),
         linkedIssueSimpleId,
       });
