@@ -7,6 +7,12 @@ const net = require("net");
 const PORTS_FILE = path.join(__dirname, "..", ".dev-ports.json");
 const DEV_ASSETS_SEED = path.join(__dirname, "..", "dev_assets_seed");
 const DEV_ASSETS = path.join(__dirname, "..", "dev_assets");
+const DEFAULT_FRONTEND_PORT = 9000;
+const DEV_PORTS_CONFIG_VERSION = 2;
+
+function isCurrentDevPortsConfig(ports) {
+  return ports?.config_version === DEV_PORTS_CONFIG_VERSION;
+}
 
 /**
  * Check if a port is available
@@ -25,7 +31,7 @@ function isPortAvailable(port) {
 /**
  * Find a free port starting from a given port
  */
-async function findFreePort(startPort = 3000) {
+async function findFreePort(startPort = DEFAULT_FRONTEND_PORT) {
   let port = startPort;
   while (!(await isPortAvailable(port))) {
     port++;
@@ -56,7 +62,17 @@ function loadPorts() {
  */
 function savePorts(ports) {
   try {
-    fs.writeFileSync(PORTS_FILE, JSON.stringify(ports, null, 2));
+    fs.writeFileSync(
+      PORTS_FILE,
+      JSON.stringify(
+        {
+          ...ports,
+          config_version: DEV_PORTS_CONFIG_VERSION,
+        },
+        null,
+        2,
+      ),
+    );
   } catch (error) {
     console.error("Failed to save ports:", error.message);
     throw error;
@@ -94,6 +110,7 @@ async function allocatePorts() {
       frontend: frontendPort,
       backend: backendPort,
       preview_proxy: previewProxyPort,
+      config_version: DEV_PORTS_CONFIG_VERSION,
       timestamp: new Date().toISOString(),
     };
 
@@ -110,7 +127,7 @@ async function allocatePorts() {
   // Try to load existing ports first
   const existingPorts = loadPorts();
 
-  if (existingPorts) {
+  if (existingPorts && isCurrentDevPortsConfig(existingPorts)) {
     // Verify existing ports are still available
     if (await verifyPorts(existingPorts)) {
       if (process.argv[2] === "get") {
@@ -120,17 +137,17 @@ async function allocatePorts() {
         console.log(`Preview Proxy: ${existingPorts.preview_proxy}`);
       }
       return existingPorts;
-    } else {
-      if (process.argv[2] === "get") {
-        console.log(
-          "Existing ports are no longer available, finding new ones..."
-        );
-      }
+    } else if (process.argv[2] === "get") {
+      console.log(
+        "Existing ports are no longer available, finding new ones..."
+      );
     }
+  } else if (existingPorts && process.argv[2] === "get") {
+    console.log("Saved dev ports use an older config, finding new ones...");
   }
 
   // Find new free ports
-  const frontendPort = await findFreePort(3000);
+  const frontendPort = await findFreePort(DEFAULT_FRONTEND_PORT);
   const backendPort = await findFreePort(frontendPort + 1);
   const previewProxyPort = await findFreePort(backendPort + 1);
 
@@ -258,4 +275,11 @@ if (require.main === module) {
   }
 }
 
-module.exports = { getPorts, clearPorts, findFreePort };
+module.exports = {
+  getPorts,
+  clearPorts,
+  findFreePort,
+  DEFAULT_FRONTEND_PORT,
+  DEV_PORTS_CONFIG_VERSION,
+  isCurrentDevPortsConfig,
+};
