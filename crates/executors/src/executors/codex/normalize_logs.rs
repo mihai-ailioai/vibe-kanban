@@ -323,6 +323,7 @@ impl ToNormalizedEntry for ReviewState {
                     description: self.description.clone(),
                     subagent_type: Some("review".to_string()),
                     result: self.result.clone(),
+                    activity_log: vec![],
                 },
                 status: self.status.clone(),
             },

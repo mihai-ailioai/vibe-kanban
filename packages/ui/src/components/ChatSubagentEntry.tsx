@@ -20,10 +20,15 @@ export interface ChatSubagentEntryRenderProps {
   workspaceId?: string;
 }
 
+export interface ChatSubagentActivityLike {
+  description: string;
+}
+
 interface ChatSubagentEntryProps {
   description: string;
   subagentType?: string | null;
   result?: ChatSubagentResultLike | null;
+  activityLog?: Array<ChatSubagentActivityLike> | null;
   expanded?: boolean;
   onToggle?: () => void;
   className?: string;
@@ -41,6 +46,7 @@ export function ChatSubagentEntry({
   description,
   subagentType,
   result,
+  activityLog,
   expanded = false,
   onToggle,
   className,
@@ -166,6 +172,23 @@ export function ChatSubagentEntry({
           />
         )}
       </div>
+
+      {/* Activity log - shows live subagent activity */}
+      {activityLog && activityLog.length > 0 && (
+        <div className="border-t px-double py-base bg-panel/30">
+          <ul className="space-y-1">
+            {activityLog.map((activity, idx) => (
+              <li
+                key={idx}
+                className="flex items-start gap-2 text-xs text-low"
+              >
+                <span className="mt-1.5 size-1 rounded-full bg-low shrink-0" />
+                <span className="break-words">{activity.description}</span>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
 
       {/* Expanded content - shows subagent output */}
       {expanded && hasContent && (

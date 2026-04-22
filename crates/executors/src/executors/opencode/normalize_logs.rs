@@ -22,7 +22,7 @@ use crate::{
     logs::{
         ActionType, AnsweredQuestion, AskUserQuestionItem, AskUserQuestionOption,
         CommandExitStatus, CommandRunResult, FileChange, NormalizedEntry, NormalizedEntryError,
-        NormalizedEntryType, TodoItem, TokenUsageInfo, ToolResult, ToolStatus,
+        NormalizedEntryType, SubagentActivity, TodoItem, TokenUsageInfo, ToolResult, ToolStatus,
         stderr_processor::normalize_stderr_logs,
         utils::{
             EntryIndexProvider,
@@ -180,6 +180,9 @@ pub(super) fn normalize_logs(
                         ),
                     );
                 }
+                OpencodeExecutorEvent::SubagentActivity { description } => {
+                    state.handle_subagent_activity(description, &msg_store);
+                }
                 OpencodeExecutorEvent::Done => {}
             }
         }
@@ -330,6 +333,32 @@ impl LogState {
                 self.add_normalized_entry(system_message(format!(
                     "Unrecognized OpenCode SDK event type `{type_}`: {properties}"
                 )));
+            }
+        }
+    }
+
+    fn handle_subagent_activity(&mut self, description: String, msg_store: &Arc<MsgStore>) {
+        // Find the most recent active Task tool and append the activity.
+        let target_call_id = self
+            .tool_states
+            .values()
+            .filter(|s| {
+                matches!(s.data, ToolData::Task { .. })
+                    && !matches!(s.state, ToolStateStatus::Completed | ToolStateStatus::Error)
+            })
+            .map(|s| s.call_id.clone())
+            .next();
+
+        if let Some(call_id) = target_call_id
+            && let Some(state) = self.tool_states.get_mut(&call_id)
+        {
+            if let ToolData::Task { activity_log, .. } = &mut state.data {
+                activity_log.push(SubagentActivity { description });
+            }
+            let worktree_path = std::path::PathBuf::new();
+            let entry = state.to_normalized_entry(&worktree_path);
+            if let Some(index) = state.index {
+                replace_normalized_entry(msg_store, index, entry);
             }
         }
     }
@@ -902,6 +931,7 @@ enum ToolData {
         description: Option<String>,
         subagent_type: Option<String>,
         output: Option<String>,
+        activity_log: Vec<SubagentActivity>,
     },
     Question {
         questions: Vec<AskUserQuestionItem>,
@@ -1140,6 +1170,7 @@ impl ToolCallState {
                 description,
                 subagent_type,
                 output: task_output,
+                ..
             } => {
                 if let Some(inp) = input {
                     if let Some(d) = inp
@@ -1251,6 +1282,7 @@ impl ToolCallState {
                 description: None,
                 subagent_type: None,
                 output: None,
+                activity_log: vec![],
             },
             "question" => ToolData::Question { questions: vec![] },
             _ => return,
@@ -1350,12 +1382,14 @@ impl ToolCallState {
                 description,
                 subagent_type,
                 output,
+                activity_log,
             } => ActionType::TaskCreate {
                 description: description.clone().unwrap_or_default(),
                 subagent_type: subagent_type.clone(),
                 result: output
                     .as_deref()
                     .map(|o| ToolResult::markdown(o.to_string())),
+                activity_log: activity_log.clone(),
             },
             ToolData::Question { questions } => ActionType::AskUserQuestion {
                 questions: questions.clone(),

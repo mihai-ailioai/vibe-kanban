@@ -1144,6 +1144,7 @@ pub(super) async fn spawn_event_listener(
     let mut base_retry_delay = Duration::from_millis(3000);
     let mut attempt: u32 = 0;
     let max_attempts: u32 = 20;
+    let mut child_session_cache: HashMap<String, bool> = HashMap::new();
     let mut resp: Option<reqwest::Response> = Some(initial_resp);
 
     loop {
@@ -1193,6 +1194,7 @@ pub(super) async fn spawn_event_listener(
                 last_event_id: &mut last_event_id,
                 models_cache_key: &models_cache_key,
                 cancel: cancel.clone(),
+                child_session_cache: &mut child_session_cache,
             },
             current_resp,
         )
@@ -1251,6 +1253,7 @@ pub(super) struct EventStreamContext<'a> {
     /// Cache key for model context windows, derived from config that affects available models.
     pub models_cache_key: &'a str,
     cancel: CancellationToken,
+    child_session_cache: &'a mut HashMap<String, bool>,
 }
 
 async fn process_event_stream(
@@ -1300,6 +1303,25 @@ async fn process_event_stream(
         };
 
         if !event_matches_session(event_type, &data, ctx.session_id) {
+            // Event does not match our session – check if it belongs to a child
+            // session spawned by a Task tool subagent.
+            if let Some(child_id) = extract_event_session_id(event_type, &data)
+                && resolve_root_session(
+                    ctx.client,
+                    ctx.base_url,
+                    ctx.directory,
+                    child_id,
+                    ctx.session_id,
+                    ctx.child_session_cache,
+                )
+                .await
+                && let Some(description) = extract_subagent_activity(event_type, &data)
+            {
+                let _ = ctx
+                    .log_writer
+                    .log_event(&OpencodeExecutorEvent::SubagentActivity { description })
+                    .await;
+            }
             continue;
         }
 
@@ -1627,8 +1649,8 @@ async fn process_event_stream(
     Ok(EventStreamOutcome::Disconnected)
 }
 
-fn event_matches_session(event_type: &str, event: &Value, session_id: &str) -> bool {
-    let extracted = match event_type {
+fn extract_event_session_id<'a>(event_type: &'a str, event: &'a Value) -> Option<&'a str> {
+    match event_type {
         "message.updated" => event
             .pointer("/properties/info/sessionID")
             .and_then(Value::as_str),
@@ -1655,9 +1677,130 @@ fn event_matches_session(event_type: &str, event: &Value, session_id: &str) -> b
                     .pointer("/properties/part/sessionID")
                     .and_then(Value::as_str)
             }),
-    };
+    }
+}
 
-    extracted == Some(session_id)
+fn event_matches_session(event_type: &str, event: &Value, session_id: &str) -> bool {
+    extract_event_session_id(event_type, event) == Some(session_id)
+}
+
+/// Walk the parentID chain for a session to determine if it descends from
+/// the given root_session_id.  Caches results in `cache`.
+async fn resolve_root_session(
+    client: &reqwest::Client,
+    base_url: &str,
+    directory: &str,
+    session_id: &str,
+    root_session_id: &str,
+    cache: &mut HashMap<String, bool>,
+) -> bool {
+    if session_id == root_session_id {
+        return true;
+    }
+    if let Some(cached) = cache.get(session_id) {
+        return *cached;
+    }
+
+    let mut visited: Vec<String> = vec![];
+    let mut current_id = session_id.to_string();
+
+    while !current_id.is_empty() {
+        if current_id == root_session_id {
+            for id in &visited {
+                cache.insert(id.clone(), true);
+            }
+            return true;
+        }
+        visited.push(current_id.clone());
+
+        let resp = client
+            .get(format!("{base_url}/session/{current_id}"))
+            .query(&[("directory", directory)])
+            .send()
+            .await;
+
+        let Ok(resp) = resp else {
+            break;
+        };
+        let Ok(json) = resp.json::<Value>().await else {
+            break;
+        };
+
+        let Some(parent_id) = json.get("parentID").and_then(Value::as_str) else {
+            break;
+        };
+        if parent_id.is_empty() {
+            break;
+        }
+        current_id = parent_id.to_string();
+    }
+
+    for id in &visited {
+        cache.insert(id.clone(), false);
+    }
+    false
+}
+
+/// Extract a human-readable activity description from a child-session event.
+fn extract_subagent_activity(event_type: &str, data: &Value) -> Option<String> {
+    match event_type {
+        "message.part.updated" => {
+            let part = data.pointer("/properties/part")?;
+            let part_type = part.get("type")?.as_str()?;
+            if part_type == "tool" {
+                let tool = part.get("tool")?.as_str()?;
+                let state = part.get("state")?;
+                let status = state.get("status")?.as_str()?;
+                let input = state.get("input");
+                let desc = match tool {
+                    "bash" => input
+                        .and_then(|i| i.get("command"))
+                        .and_then(Value::as_str)
+                        .map(|c| format!("Running: {c}")),
+                    "read" => input
+                        .and_then(|i| i.get("filePath"))
+                        .and_then(Value::as_str)
+                        .map(|p| format!("Reading: {p}")),
+                    "write" => input
+                        .and_then(|i| i.get("filePath"))
+                        .and_then(Value::as_str)
+                        .map(|p| format!("Writing: {p}")),
+                    "edit" => input
+                        .and_then(|i| i.get("filePath"))
+                        .and_then(Value::as_str)
+                        .map(|p| format!("Editing: {p}")),
+                    "webfetch" => input
+                        .and_then(|i| i.get("url"))
+                        .and_then(Value::as_str)
+                        .map(|u| format!("Fetching: {u}")),
+                    "search" => input
+                        .and_then(|i| i.get("query"))
+                        .and_then(Value::as_str)
+                        .map(|q| format!("Searching: {q}")),
+                    _ => {
+                        let title = state
+                            .get("title")
+                            .and_then(Value::as_str)
+                            .map(|t| t.to_string());
+                        title.or_else(|| Some(format!("Tool: {tool}")))
+                    }
+                };
+                desc.map(|d| format!("[{status}] {d}"))
+            } else if part_type == "text" {
+                // Too noisy for streaming text
+                None
+            } else {
+                None
+            }
+        }
+        "permission.asked" => {
+            let permission = data
+                .pointer("/properties/permission")
+                .and_then(Value::as_str)?;
+            Some(format!("Permission: {permission}"))
+        }
+        _ => None,
+    }
 }
 
 async fn handle_approval_error(

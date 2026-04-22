@@ -1136,6 +1136,7 @@ impl ClaudeLogProcessor {
                     description: task_description,
                     subagent_type: subagent_type.clone(),
                     result: None,
+                    activity_log: vec![],
                 }
             }
             ClaudeToolData::ExitPlanMode { plan } => {
@@ -1287,6 +1288,7 @@ impl ClaudeLogProcessor {
                                     description: desc.clone(),
                                     subagent_type: subagent_type.clone(),
                                     result: None,
+                                    activity_log: vec![],
                                 },
                                 ToolStatus::Created,
                                 desc.clone(),
@@ -1325,6 +1327,7 @@ impl ClaudeLogProcessor {
                                     description: info.content.clone(),
                                     subagent_type,
                                     result: None,
+                                    activity_log: vec![],
                                 },
                                 ToolStatus::Created,
                                 desc.clone(),
@@ -1357,6 +1360,7 @@ impl ClaudeLogProcessor {
                                     description: desc.clone(),
                                     subagent_type,
                                     result: None,
+                                    activity_log: vec![],
                                 },
                                 task_status,
                                 desc,
@@ -1625,6 +1629,7 @@ impl ClaudeLogProcessor {
                                         r#type: res_type,
                                         value: res_value,
                                     }),
+                                    activity_log: vec![],
                                 },
                                 status,
                                 info.content.clone(),

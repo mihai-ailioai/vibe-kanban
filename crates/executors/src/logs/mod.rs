@@ -164,6 +164,12 @@ pub struct TodoItem {
     pub priority: Option<String>,
 }
 
+/// A single subagent activity entry for surfacing child session work.
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+pub struct SubagentActivity {
+    pub description: String,
+}
+
 /// Types of tool actions that can be performed
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[serde(tag = "action", rename_all = "snake_case")]
@@ -202,6 +208,8 @@ pub enum ActionType {
         subagent_type: Option<String>,
         #[serde(default)]
         result: Option<ToolResult>,
+        #[serde(default)]
+        activity_log: Vec<SubagentActivity>,
     },
     PlanPresentation {
         plan: String,

@@ -46,6 +46,9 @@ pub(super) enum OpencodeExecutorEvent {
     Error {
         message: String,
     },
+    SubagentActivity {
+        description: String,
+    },
     Done,
 }
 

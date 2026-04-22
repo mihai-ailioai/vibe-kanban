@@ -225,6 +225,7 @@ function renderToolUseEntry(
         description={action_type.description}
         subagentType={action_type.subagent_type}
         result={action_type.result}
+        activityLog={action_type.activity_log}
         expansionKey={expansionKey}
         status={status}
         workspaceId={workspaceWithSession?.id}
@@ -980,6 +981,7 @@ function SubagentEntry({
   description,
   subagentType,
   result,
+  activityLog,
   expansionKey,
   status,
   workspaceId,
@@ -988,6 +990,7 @@ function SubagentEntry({
   description: string;
   subagentType: string | null | undefined;
   result: ToolResult | null | undefined;
+  activityLog: Array<{ description: string }> | null | undefined;
   expansionKey: string;
   status: ToolStatus;
   workspaceId: string | undefined;
@@ -1005,6 +1008,7 @@ function SubagentEntry({
       description={description}
       subagentType={subagentType}
       result={result}
+      activityLog={activityLog}
       expanded={expanded}
       onToggle={hasResult ? toggle : undefined}
       status={status}
