@@ -13,6 +13,7 @@ export interface IssueRelationshipsSectionRelationship {
   relatedIssueId: string;
   relatedIssueDisplayId: string;
   displayType: RelationshipDisplayType;
+  statusColor?: string;
 }
 
 export interface IssueRelationshipsSectionProps {
@@ -55,6 +56,7 @@ export function IssueRelationshipsSection({
               <RelationshipBadge
                 displayType={rel.displayType}
                 relatedIssueDisplayId={rel.relatedIssueDisplayId}
+                statusColor={rel.statusColor}
                 onClick={(e) => {
                   e.stopPropagation();
                   onRelationshipClick(rel.relatedIssueId);

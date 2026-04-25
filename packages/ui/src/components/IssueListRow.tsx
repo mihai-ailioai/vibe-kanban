@@ -57,6 +57,7 @@ export interface IssueListRowRelationship {
   relationshipId: string;
   displayType: RelationshipDisplayType;
   relatedIssueDisplayId: string;
+  statusColor?: string;
 }
 
 export interface IssueListRowProps {
@@ -172,6 +173,7 @@ export function IssueListRow({
                     key={rel.relationshipId}
                     displayType={rel.displayType}
                     relatedIssueDisplayId={rel.relatedIssueDisplayId}
+                    statusColor={rel.statusColor}
                     compact
                   />
                 ))}

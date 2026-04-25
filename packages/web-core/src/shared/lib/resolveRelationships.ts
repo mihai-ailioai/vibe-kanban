@@ -12,15 +12,17 @@ export interface ResolvedRelationship {
   displayType: RelationshipDisplayType;
   relatedIssueId: string;
   relatedIssueDisplayId: string;
+  statusColor?: string;
 }
 
 export function resolveRelationshipsForIssue(
   issueId: string,
   relationships: IssueRelationship[],
-  issuesById: Map<string, Issue>
+  issuesById: Map<string, Issue>,
+  getStatus?: (statusId: string) => { color: string } | undefined
 ): ResolvedRelationship[] {
   return relationships
-    .map((r) => {
+    .map((r): ResolvedRelationship | null => {
       const isSource = r.issue_id === issueId;
       const otherIssueId = isSource ? r.related_issue_id : r.issue_id;
       const otherIssue = issuesById.get(otherIssueId);
@@ -35,11 +37,14 @@ export function resolveRelationshipsForIssue(
         displayType = isSource ? 'duplicate_of' : 'duplicated_by';
       }
 
+      const status = getStatus?.(otherIssue.status_id);
+
       return {
         relationshipId: r.id,
         displayType,
         relatedIssueId: otherIssueId,
         relatedIssueDisplayId: otherIssue.simple_id,
+        statusColor: status?.color,
       };
     })
     .filter((r): r is ResolvedRelationship => r !== null);

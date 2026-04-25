@@ -29,6 +29,7 @@ export interface KanbanRelationship {
   relationshipId: string;
   displayType: RelationshipDisplayType;
   relatedIssueDisplayId: string;
+  statusColor?: string;
 }
 
 export interface KanbanPullRequest {
@@ -330,6 +331,7 @@ export function KanbanCardContent<TTag extends KanbanTag = KanbanTag>({
               key={rel.relationshipId}
               displayType={rel.displayType}
               relatedIssueDisplayId={rel.relatedIssueDisplayId}
+              statusColor={rel.statusColor}
               compact
             />
           ))}

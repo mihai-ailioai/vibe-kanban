@@ -143,6 +143,7 @@ export function KanbanContainer() {
     getWorkspacesForIssue,
     getRelationshipsForIssue,
     issuesById,
+    getStatus,
     insertIssueTag,
     removeIssueTag,
     insertTag,
@@ -870,9 +871,10 @@ export function KanbanContainer() {
       resolveRelationshipsForIssue(
         issueId,
         getRelationshipsForIssue(issueId),
-        issuesById
+        issuesById,
+        getStatus
       ),
-    [getRelationshipsForIssue, issuesById]
+    [getRelationshipsForIssue, issuesById, getStatus]
   );
 
   const handleCreateTag = useCallback(
@@ -1051,7 +1053,8 @@ export function KanbanContainer() {
                               relationships={resolveRelationshipsForIssue(
                                 issue.id,
                                 getRelationshipsForIssue(issue.id),
-                                issuesById
+                                issuesById,
+                                getStatus
                               )}
                               isSubIssue={!!issue.parent_issue_id}
                               isMobile={isMobile}

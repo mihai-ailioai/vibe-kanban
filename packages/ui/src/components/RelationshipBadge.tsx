@@ -21,6 +21,7 @@ export interface RelationshipBadgeProps {
   compact?: boolean;
   className?: string;
   onClick?: (e: React.MouseEvent) => void;
+  statusColor?: string;
 }
 
 const RELATIONSHIP_ICONS = {
@@ -52,10 +53,18 @@ export function RelationshipBadge({
   compact,
   className,
   onClick,
+  statusColor,
 }: RelationshipBadgeProps) {
   const Icon = RELATIONSHIP_ICONS[displayType];
   const label = getRelationshipLabel(displayType);
   const isBlocking = displayType === 'blocks' || displayType === 'blocked_by';
+
+  const colorStyle = statusColor
+    ? {
+        backgroundColor: `hsl(${statusColor} / 0.15)`,
+        color: `hsl(${statusColor})`,
+      }
+    : undefined;
 
   return (
     <span
@@ -72,13 +81,15 @@ export function RelationshipBadge({
             }
           : undefined
       }
+      style={colorStyle}
       className={cn(
         'inline-flex items-center gap-half',
         'h-5 px-half',
         'rounded-sm',
         'text-sm font-medium',
         'whitespace-nowrap',
-        isBlocking ? 'bg-error/10 text-error' : 'bg-panel text-low',
+        !statusColor &&
+          (isBlocking ? 'bg-error/10 text-error' : 'bg-panel text-low'),
         onClick && 'cursor-pointer hover:opacity-80',
         className
       )}
