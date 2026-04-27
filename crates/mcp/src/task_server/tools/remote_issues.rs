@@ -7,7 +7,7 @@ use api_types::{
     CreateIssueRequest, Issue, IssuePriority, IssueRelationship, IssueRelationshipType,
     IssueSortField, ListIssueTagsResponse, ListIssuesResponse, ListPullRequestsResponse,
     ListTagsResponse, MutationResponse, PullRequestStatus, SearchIssuesRequest, SortDirection,
-    UpdateIssueRequest,
+    UpdateIssueRequest, some_if_present,
 };
 use rmcp::{
     ErrorData, handler::server::wrapper::Parameters, model::CallToolResult, schemars, tool,
@@ -222,6 +222,7 @@ struct McpUpdateIssueRequest {
     #[schemars(
         description = "Parent issue ID to set this as a subissue. Pass null to un-nest from parent."
     )]
+    #[serde(default, deserialize_with = "some_if_present")]
     parent_issue_id: Option<Option<Uuid>>,
 }
 
