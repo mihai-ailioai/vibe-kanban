@@ -1,0 +1,158 @@
+---
+title: "Self-hosted production runbook"
+description: "Operate, update, back up, and migrate a self-hosted Vibe Kanban Cloud deployment"
+---
+
+Use this runbook after completing the [Docker Compose deployment guide](/self-hosting/deploy-docker). It records the operational details that are easy to lose when a server has been running for a while, and provides a checklist for moving the deployment to a new machine.
+
+<Warning>
+  Do not commit live `.env.remote` files, database dumps, SSH keys, OAuth
+  secrets, JWT secrets, or provider credentials. Keep this runbook public by
+  recording variable names and procedures only.
+</Warning>
+
+## Reference production layout
+
+The current self-hosted deployment pattern uses this layout:
+
+```text
+/root/vibe-kanban
+├── crates/remote/docker-compose.yml
+└── crates/remote/.env.remote
+```
+
+The deployment runs these Docker Compose services:
+
+- `remote-server` — Vibe Kanban Cloud API and web frontend.
+- `remote-db` — PostgreSQL with `wal_level=logical` for ElectricSQL.
+- `electric` — ElectricSQL read-path sync service.
+- `relay-server` — optional relay service, enabled with the `relay` profile.
+
+Typical local-only port bindings are:
+
+```text
+127.0.0.1:3000 -> remote-server:8081
+127.0.0.1:8082 -> relay-server:8082
+0.0.0.0:5433 -> remote-db:5432
+```
+
+Place Caddy, nginx, or another reverse proxy in front of `remote-server` and `relay-server`. Keep ElectricSQL internal; clients should use the authenticated `/shape/*` proxy served by `remote-server`.
+
+## Required environment keys
+
+Create `crates/remote/.env.remote` on the host. Use real values on the server, but only commit a sanitised example.
+
+```env .env.remote.example
+# Public URLs and exposed ports
+PUBLIC_BASE_URL=https://kanban.example.com
+REMOTE_SERVER_PORTS=127.0.0.1:3000:8081
+VITE_RELAY_API_BASE_URL=https://relay.example.com
+
+# Required secret. Keep stable across migrations to preserve sessions.
+VIBEKANBAN_REMOTE_JWT_SECRET=<generated-secret>
+
+# ElectricSQL role password. Keep stable with the database.
+ELECTRIC_ROLE_PASSWORD=<generated-secret>
+
+# Choose at least one authentication method.
+GITHUB_OAUTH_CLIENT_ID=
+GITHUB_OAUTH_CLIENT_SECRET=
+GOOGLE_OAUTH_CLIENT_ID=
+GOOGLE_OAUTH_CLIENT_SECRET=
+SELF_HOST_LOCAL_AUTH_EMAIL=
+SELF_HOST_LOCAL_AUTH_PASSWORD=
+
+# Optional integrations
+LOOPS_EMAIL_API_KEY=
+DIGEST_ENABLED=false
+R2_ACCESS_KEY_ID=
+R2_SECRET_ACCESS_KEY=
+R2_REVIEW_ENDPOINT=
+R2_REVIEW_BUCKET=
+REVIEW_WORKER_BASE_URL=
+GITHUB_APP_ID=
+GITHUB_APP_PRIVATE_KEY=
+GITHUB_APP_WEBHOOK_SECRET=
+GITHUB_APP_SLUG=
+```
+
+<Tip>
+  `VITE_*` values are build-time settings. If you change them, rebuild the
+  Docker image instead of only restarting the containers.
+</Tip>
+
+## Update the deployment
+
+Back up the database before pulling new code or rebuilding images:
+
+```bash
+cd /root/vibe-kanban/crates/remote
+mkdir -p ../../backups
+docker compose --env-file .env.remote -f docker-compose.yml exec -T remote-db \
+  pg_dump -U remote remote > ../../backups/remote_db_$(date +%Y%m%d_%H%M%S).sql
+```
+
+Update the repository from your fork, then rebuild the remote stack:
+
+```bash
+cd /root/vibe-kanban
+git fetch fork main
+git checkout main
+git reset --hard fork/main
+
+cd crates/remote
+docker compose --env-file .env.remote -f docker-compose.yml --profile relay up -d --build
+```
+
+If your deployment does not use the relay service, omit `--profile relay`.
+
+<Warning>
+  Do not run `docker compose down -v` or `pnpm run remote:dev:clean` on
+  production unless you intentionally want to remove persistent volumes. These
+  commands can delete the database.
+</Warning>
+
+## Post-update checks
+
+Confirm all services are running and healthy:
+
+```bash
+cd /root/vibe-kanban/crates/remote
+docker compose --env-file .env.remote -f docker-compose.yml --profile relay ps
+docker compose --env-file .env.remote -f docker-compose.yml logs --tail=200 remote-server
+docker compose --env-file .env.remote -f docker-compose.yml logs --tail=200 electric
+```
+
+Check the public health endpoint through the reverse proxy:
+
+```bash
+curl -fsS https://kanban.example.com/v1/health
+```
+
+Expected response:
+
+```json
+{ "status": "ok", "version": "..." }
+```
+
+Then sign in and create or update a test issue to confirm API writes and ElectricSQL sync both work.
+
+## Migrate to a new machine
+
+Use this checklist when replacing the server:
+
+1. Install Docker, Docker Compose v2, Git, and your reverse proxy.
+2. Clone your fork to `/root/vibe-kanban` or update the commands in this runbook to match the new path.
+3. Copy `crates/remote/.env.remote` from a secure secret store, not from Git.
+4. Restore or migrate the PostgreSQL data before starting `electric`.
+5. Confirm `remote-db` still starts with `wal_level=logical`.
+6. Start the stack with the same Docker Compose profile set used on the old host.
+7. Update DNS and reverse proxy routes for the main app and relay hostnames.
+8. Run the post-update checks above.
+
+## Production hardening notes
+
+- Use `restart: unless-stopped` for production services that should survive host restarts, including `electric`.
+- Keep `VIBEKANBAN_REMOTE_JWT_SECRET` stable across rebuilds and migrations.
+- Back up `remote-db` before code updates because SQLx migrations run automatically at `remote-server` startup.
+- Restart `electric` after `remote-server` is healthy if ElectricSQL reports database role or publication errors immediately after a migration.

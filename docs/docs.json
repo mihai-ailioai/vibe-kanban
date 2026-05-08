@@ -88,10 +88,7 @@
           "settings/index",
           {
             "group": "General",
-            "pages": [
-              "settings/general",
-              "settings/creating-task-tags"
-            ]
+            "pages": ["settings/general", "settings/creating-task-tags"]
           },
           "settings/projects-repositories",
           "settings/organization-settings",
@@ -104,7 +101,8 @@
         "group": "Self-Hosting",
         "pages": [
           "self-hosting/local-development",
-          "self-hosting/deploy-docker"
+          "self-hosting/deploy-docker",
+          "self-hosting/production-runbook"
         ]
       },
       {
@@ -119,10 +117,7 @@
       },
       {
         "group": "Help",
-        "pages": [
-          "troubleshooting",
-          "responsible-disclosure"
-        ]
+        "pages": ["troubleshooting", "responsible-disclosure"]
       }
     ]
   },

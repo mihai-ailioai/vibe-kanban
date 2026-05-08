@@ -3,7 +3,7 @@
 services:
   remote-db:
     image: postgres:16-alpine
-    command: [ "postgres", "-c", "wal_level=logical" ]
+    command: ["postgres", "-c", "wal_level=logical"]
     environment:
       POSTGRES_DB: remote
       POSTGRES_USER: remote
@@ -11,7 +11,7 @@ services:
     volumes:
       - remote-db-data:/var/lib/postgresql/data
     healthcheck:
-      test: [ "CMD-SHELL", "pg_isready -U remote -d remote" ]
+      test: ["CMD-SHELL", "pg_isready -U remote -d remote"]
       interval: 5s
       timeout: 5s
       retries: 5
@@ -52,7 +52,7 @@ services:
   electric:
     image: electricsql/electric:1.4.13
     working_dir: /app
-    restart: on-failure
+    restart: unless-stopped
     environment:
       DATABASE_URL: postgresql://electric_sync:${ELECTRIC_ROLE_PASSWORD:-remote}@remote-db:5432/remote?sslmode=disable
       PG_PROXY_PORT: 65432
@@ -101,13 +101,13 @@ services:
       SERVER_PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:-http://localhost:3000}
       VIBEKANBAN_REMOTE_JWT_SECRET: ${VIBEKANBAN_REMOTE_JWT_SECRET:?set in .env.remote}
 
-      # Auth 
+      # Auth
       # Configure at least one OAuth provider, or set self-host local auth credentials.
       GITHUB_OAUTH_CLIENT_ID: ${GITHUB_OAUTH_CLIENT_ID:-}
       GITHUB_OAUTH_CLIENT_SECRET: ${GITHUB_OAUTH_CLIENT_SECRET:-}
       GOOGLE_OAUTH_CLIENT_ID: ${GOOGLE_OAUTH_CLIENT_ID:-}
       GOOGLE_OAUTH_CLIENT_SECRET: ${GOOGLE_OAUTH_CLIENT_SECRET:-}
-      # Self-hosted local auth 
+      # Self-hosted local auth
       SELF_HOST_LOCAL_AUTH_EMAIL: ${SELF_HOST_LOCAL_AUTH_EMAIL:-}
       SELF_HOST_LOCAL_AUTH_PASSWORD: ${SELF_HOST_LOCAL_AUTH_PASSWORD:-}
 
