@@ -23,6 +23,8 @@
         "agentsDesc": "コーディングエージェントの設定",
         "mcp": "MCPサーバー",
         "mcpDesc": "モデルコンテキストプロトコルサーバー",
+        "opencode-time-tracking": "OpenCode Time Tracking",
+        "opencode-time-trackingDesc": "Plugin tokens for active-time tracking",
         "organizations": "Organization Settings",
         "organizationsDesc": "Manage organization members and permissions",
         "remote-projects": "プロジェクト",

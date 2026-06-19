@@ -27,6 +27,8 @@
         "agentsDesc": "Coding agent configurations",
         "mcp": "MCP Servers",
         "mcpDesc": "Model Context Protocol servers",
+        "opencode-time-tracking": "OpenCode Time Tracking",
+        "opencode-time-trackingDesc": "Plugin tokens for active-time tracking",
         "organizations": "Organization Settings",
         "organizationsDesc": "Manage organization members and permissions",
         "remote-projects": "Projects",

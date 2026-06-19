@@ -5,10 +5,11 @@ use std::time::Duration;
 use api_types::{
     AcceptInvitationResponse, AuthMethodsResponse, CreateInvitationRequest,
     CreateInvitationResponse, CreateIssueAssigneeRequest, CreateIssueRelationshipRequest,
-    CreateIssueRequest, CreateIssueTagRequest, CreateOrganizationRequest,
-    CreateOrganizationResponse, CreateWorkspaceRequest, DeleteResponse, DeleteWorkspaceRequest,
-    GetInvitationResponse, GetOrganizationResponse, HandoffInitRequest, HandoffInitResponse,
-    HandoffRedeemRequest, HandoffRedeemResponse, Issue, IssueAssignee, IssueRelationship, IssueTag,
+    CreateIssueRequest, CreateIssueTagRequest, CreateOpenCodeTimeEntriesRequest,
+    CreateOpenCodeTimeEntriesResponse, CreateOrganizationRequest, CreateOrganizationResponse,
+    CreateWorkspaceRequest, DeleteResponse, DeleteWorkspaceRequest, GetInvitationResponse,
+    GetOrganizationResponse, HandoffInitRequest, HandoffInitResponse, HandoffRedeemRequest,
+    HandoffRedeemResponse, Issue, IssueAssignee, IssueRelationship, IssueTag,
     ListAttachmentsResponse, ListInvitationsResponse, ListIssueAssigneesResponse,
     ListIssueRelationshipsResponse, ListIssueTagsResponse, ListIssuesResponse, ListMembersResponse,
     ListOrganizationsResponse, ListProjectStatusesResponse, ListProjectsResponse,
@@ -768,6 +769,14 @@ impl RemoteClient {
         request: &SearchIssuesRequest,
     ) -> Result<ListIssuesResponse, RemoteClientError> {
         self.post_authed("/v1/issues/search", Some(request)).await
+    }
+
+    pub async fn create_opencode_time_entries(
+        &self,
+        request: &CreateOpenCodeTimeEntriesRequest,
+    ) -> Result<CreateOpenCodeTimeEntriesResponse, RemoteClientError> {
+        self.post_authed("/v1/time-tracking/opencode/entries", Some(request))
+            .await
     }
 
     /// Gets a single issue by ID.

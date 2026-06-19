@@ -4,15 +4,17 @@ use api_types::{
     Attachment, AttachmentUrlResponse, AttachmentWithBlob, Blob, CreateIssueAssigneeRequest,
     CreateIssueCommentReactionRequest, CreateIssueCommentRequest, CreateIssueFollowerRequest,
     CreateIssueRelationshipRequest, CreateIssueRequest, CreateIssueTagRequest,
-    CreateProjectRequest, CreateProjectStatusRequest, CreatePullRequestIssueRequest,
-    CreateTagRequest, ExportRequest, Issue, IssueAssignee, IssueComment, IssueCommentReaction,
-    IssueFollower, IssuePriority, IssueRelationship, IssueRelationshipType, IssueSortField,
-    IssueTag, ListIssuesQuery, ListIssuesResponse, MemberRole, Notification, NotificationGroupKind,
-    NotificationPayload, NotificationType, OrganizationMember, Project, ProjectStatus, PullRequest,
-    PullRequestIssue, PullRequestStatus, SearchIssuesRequest, SortDirection, Tag,
-    UpdateIssueCommentReactionRequest, UpdateIssueCommentRequest, UpdateIssueRequest,
-    UpdateNotificationRequest, UpdateProjectRequest, UpdateProjectStatusRequest, UpdateTagRequest,
-    User, UserData, Workspace,
+    CreateIssueTimeAdjustmentRequest, CreateOpenCodeTimeEntriesRequest,
+    CreateOpenCodeTimeEntriesResponse, CreateProjectRequest, CreateProjectStatusRequest,
+    CreatePullRequestIssueRequest, CreateTagRequest, ExportRequest, GetIssueTimeTrackingResponse,
+    Issue, IssueAssignee, IssueComment, IssueCommentReaction, IssueFollower, IssuePriority,
+    IssueRelationship, IssueRelationshipType, IssueSortField, IssueTag, IssueTimeTotal,
+    ListIssuesQuery, ListIssuesResponse, MemberRole, Notification, NotificationGroupKind,
+    NotificationPayload, NotificationType, OpenCodeTimeEntryInput, OpenCodeTimeEntryResult,
+    OrganizationMember, Project, ProjectStatus, PullRequest, PullRequestIssue, PullRequestStatus,
+    SearchIssuesRequest, SortDirection, Tag, TimeEntryStatus, UpdateIssueCommentReactionRequest,
+    UpdateIssueCommentRequest, UpdateIssueRequest, UpdateNotificationRequest, UpdateProjectRequest,
+    UpdateProjectStatusRequest, UpdateTagRequest, User, UserData, Workspace,
 };
 use relay_types::{CreateRemoteSessionResponse, ListRelayHostsResponse, RelayHost};
 use remote::{
@@ -62,6 +64,12 @@ fn main() {
 
 fn export_shapes() -> String {
     let routes = all_shape_routes();
+    assert!(
+        routes
+            .iter()
+            .any(|route| route.shape.name() == "PROJECT_ISSUE_TIME_TOTALS_SHAPE"),
+        "PROJECT_ISSUE_TIME_TOTALS_SHAPE must be registered for remote type generation"
+    );
 
     let mut output = String::new();
 
@@ -90,6 +98,7 @@ fn export_shapes() -> String {
         IssueTag::decl(),
         IssueRelationship::decl(),
         IssueRelationshipType::decl(),
+        IssueTimeTotal::decl(),
         IssueComment::decl(),
         IssueCommentReaction::decl(),
         IssuePriority::decl(),
@@ -123,6 +132,13 @@ fn export_shapes() -> String {
         CreateIssueFollowerRequest::decl(),
         CreateIssueTagRequest::decl(),
         CreateIssueRelationshipRequest::decl(),
+        CreateOpenCodeTimeEntriesRequest::decl(),
+        OpenCodeTimeEntryInput::decl(),
+        TimeEntryStatus::decl(),
+        OpenCodeTimeEntryResult::decl(),
+        CreateOpenCodeTimeEntriesResponse::decl(),
+        GetIssueTimeTrackingResponse::decl(),
+        CreateIssueTimeAdjustmentRequest::decl(),
         CreateIssueCommentRequest::decl(),
         UpdateIssueCommentRequest::decl(),
         CreateIssueCommentReactionRequest::decl(),

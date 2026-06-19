@@ -73,6 +73,7 @@ import type { IssuePriority } from 'shared/remote-types';
 import { useIssueMultiSelect } from '@/shared/hooks/useIssueMultiSelect';
 import { useIssueSelectionStore } from '@/shared/stores/useIssueSelectionStore';
 import { BulkActionBarContainer } from './BulkActionBarContainer';
+import { formatIssueActiveTime, getIssueTotalMs } from '@/shared/lib/issueTime';
 
 const areStringSetsEqual = (left: string[], right: string[]): boolean => {
   if (left.length !== right.length) {
@@ -148,8 +149,17 @@ export function KanbanContainer() {
     removeIssueTag,
     insertTag,
     pullRequests,
+    issueTimeTotalsByIssueId,
     isLoading: projectLoading,
   } = useProjectContext();
+
+  const getIssueTimeLabel = useCallback(
+    (issueId: string) =>
+      formatIssueActiveTime(
+        getIssueTotalMs(issueTimeTotalsByIssueId.get(issueId))
+      ),
+    [issueTimeTotalsByIssueId]
+  );
 
   const {
     projects,
@@ -1056,6 +1066,7 @@ export function KanbanContainer() {
                                 issuesById,
                                 getStatus
                               )}
+                              issueTimeLabel={getIssueTimeLabel(issue.id)}
                               isSubIssue={!!issue.parent_issue_id}
                               isMobile={isMobile}
                               onPriorityClick={(e) => {
@@ -1140,6 +1151,7 @@ export function KanbanContainer() {
               getResolvedRelationshipsForIssue={
                 getResolvedRelationshipsForIssue
               }
+              getIssueTimeLabel={getIssueTimeLabel}
               onIssueClick={handleCardClick}
               selectedIssueId={selectedKanbanIssueId}
               selectedIssueIds={selectedIssueIds}

@@ -1,4 +1,5 @@
 import type { ReactNode } from 'react';
+import type { InputHTMLAttributes } from 'react';
 import { cn } from '@/shared/lib/utils';
 import { useTranslation } from 'react-i18next';
 import {
@@ -293,25 +294,33 @@ export function SettingsSelect<T extends string>({
 
 // SettingsInput - A text input field
 export function SettingsInput({
+  id,
   value,
   onChange,
   placeholder,
   error,
   disabled,
+  ...inputProps
 }: {
+  id?: string;
   value: string;
   onChange: (value: string) => void;
   placeholder?: string;
   error?: boolean;
   disabled?: boolean;
-}) {
+} & Omit<
+  InputHTMLAttributes<HTMLInputElement>,
+  'className' | 'disabled' | 'onChange' | 'placeholder' | 'type' | 'value'
+>) {
   return (
     <input
+      id={id}
       type="text"
       value={value}
       onChange={(e) => onChange(e.target.value)}
       placeholder={placeholder}
       disabled={disabled}
+      {...inputProps}
       className={cn(
         'w-full bg-secondary border rounded-sm px-base py-half text-sm text-high',
         'placeholder:text-low placeholder:opacity-80 focus:outline-none focus:ring-1 focus:ring-brand',

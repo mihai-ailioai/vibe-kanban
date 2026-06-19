@@ -63,6 +63,7 @@ import {
   useKanbanIssueComposer,
   useKanbanIssueComposerStore,
 } from '@/shared/stores/useKanbanIssueComposerStore';
+import { formatIssueActiveTime, getIssueTotalMs } from '@/shared/lib/issueTime';
 
 interface KanbanIssuePanelContainerProps {
   issueResolution: 'resolving' | 'ready' | 'missing' | null;
@@ -112,6 +113,7 @@ export function KanbanIssuePanelContainer({
     insertTag,
     getTagsForIssue,
     getPullRequestsForIssue,
+    issueTimeTotalsByIssueId,
     isLoading: projectLoading,
   } = useProjectContext();
   const selectedKanbanIssueId = routeState.issueId;
@@ -187,6 +189,13 @@ export function KanbanIssuePanelContainer({
     if (kanbanCreateMode || !selectedKanbanIssueId) return null;
     return issues.find((i) => i.id === selectedKanbanIssueId) ?? null;
   }, [issues, selectedKanbanIssueId, kanbanCreateMode]);
+  const selectedIssueTimeLabel = useMemo(() => {
+    if (!selectedIssue) return null;
+
+    return formatIssueActiveTime(
+      getIssueTotalMs(issueTimeTotalsByIssueId.get(selectedIssue.id))
+    );
+  }, [issueTimeTotalsByIssueId, selectedIssue]);
 
   const creatorUserId = selectedIssue?.creator_user_id ?? null;
   const issueCreator = useMemo(() => {
@@ -1050,6 +1059,7 @@ export function KanbanIssuePanelContainer({
       issueId={selectedKanbanIssueId}
       creatorUser={issueCreator}
       parentIssue={parentIssue}
+      issueTimeLabel={selectedIssueTimeLabel}
       onParentIssueClick={handleParentIssueClick}
       onRemoveParentIssue={handleRemoveParentIssue}
       linkedPrs={linkedPrs}

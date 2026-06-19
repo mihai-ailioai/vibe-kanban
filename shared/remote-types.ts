@@ -38,6 +38,8 @@ export type IssueRelationship = { id: string, issue_id: string, related_issue_id
 
 export type IssueRelationshipType = "blocking" | "related" | "has_duplicate";
 
+export type IssueTimeTotal = { project_id: string, issue_id: string, opencode_active_ms: number, manual_adjustment_ms: number, total_ms: number, entry_count: number, last_entry_at: string | null, updated_at: string, };
+
 export type IssueComment = { id: string, issue_id: string, author_id: string | null, parent_id: string | null, message: string, created_at: string, updated_at: string, };
 
 export type IssueCommentReaction = { id: string, comment_id: string, user_id: string, emoji: string, created_at: string, };
@@ -147,6 +149,20 @@ export type CreateIssueRelationshipRequest = {
  */
 id?: string, issue_id: string, related_issue_id: string, relationship_type: IssueRelationshipType, };
 
+export type CreateOpenCodeTimeEntriesRequest = { schema_version: number, entries: Array<OpenCodeTimeEntryInput>, };
+
+export type OpenCodeTimeEntryInput = { entry_id: string, project_id: string, issue_id: string, source_session_id: string | null, started_at: string, ended_at: string, duration_ms: number, metadata: JsonValue, };
+
+export type TimeEntryStatus = "created" | "duplicate";
+
+export type OpenCodeTimeEntryResult = { entry_id: string, status: TimeEntryStatus, project_id: string, issue_id: string, duration_ms: number, };
+
+export type CreateOpenCodeTimeEntriesResponse = { txid: number, results: Array<OpenCodeTimeEntryResult>, updated_totals: Array<IssueTimeTotal>, };
+
+export type GetIssueTimeTrackingResponse = { total: IssueTimeTotal | null, };
+
+export type CreateIssueTimeAdjustmentRequest = { entry_id?: string, duration_ms: number, note: string, };
+
 export type CreateIssueCommentRequest = { 
 /**
  * Optional client-generated ID. If not provided, server generates one.
@@ -250,6 +266,13 @@ export const PROJECT_ISSUES_SHAPE = defineShape<Issue>(
   ['project_id'] as const,
   '/v1/shape/project/{project_id}/issues',
   '/v1/fallback/issues'
+);
+
+export const PROJECT_ISSUE_TIME_TOTALS_SHAPE = defineShape<IssueTimeTotal>(
+  'issue_time_totals',
+  ['project_id'] as const,
+  '/v1/shape/project/{project_id}/issue_time_totals',
+  '/v1/fallback/issue_time_totals'
 );
 
 export const USER_WORKSPACES_SHAPE = defineShape<Workspace>(

@@ -14,6 +14,7 @@ pub mod issue_comments;
 pub mod issue_followers;
 pub mod issue_relationships;
 pub mod issue_tags;
+pub mod issue_time_tracking;
 pub mod issues;
 pub mod notifications;
 pub mod oauth;

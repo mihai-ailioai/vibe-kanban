@@ -49,6 +49,7 @@ pub mod pull_request_issues;
 mod pull_requests;
 mod review;
 pub mod tags;
+mod time_tracking;
 mod tokens;
 mod workspaces;
 
@@ -131,6 +132,7 @@ pub fn router(state: AppState) -> Router {
         .merge(pull_request_issues::router())
         .merge(pull_requests::router())
         .merge(notifications::router())
+        .merge(time_tracking::router())
         .merge(workspaces::router())
         .merge(billing::protected_router())
         .merge(export::router())

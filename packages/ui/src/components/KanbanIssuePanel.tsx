@@ -38,6 +38,7 @@ import {
   TooltipTrigger,
 } from './RadixTooltip';
 import { ErrorAlert } from './ErrorAlert';
+import { IssueTimeBadge } from './IssueTimeBadge';
 
 export type IssuePanelMode = 'create' | 'edit';
 type IssuePriority = IssuePropertyRowProps['priority'];
@@ -101,6 +102,8 @@ export interface KanbanIssuePanelProps {
   issueId?: string | null;
   creatorUser?: IssueCreator;
   parentIssue?: { id: string; simpleId: string } | null;
+  issueTimeLabel?: string | null;
+  issueTimeExplanation?: string;
   onParentIssueClick?: () => void;
   onRemoveParentIssue?: () => void;
   linkedPrs?: LinkedPullRequest[];
@@ -167,6 +170,8 @@ export function KanbanIssuePanel({
   issueId,
   creatorUser,
   parentIssue,
+  issueTimeLabel,
+  issueTimeExplanation,
   onParentIssueClick,
   onRemoveParentIssue,
   linkedPrs = [],
@@ -317,6 +322,19 @@ export function KanbanIssuePanel({
             disabled={isSubmitting}
           />
         </div>
+
+        {!isCreateMode && issueTimeLabel && (
+          <div className="px-base py-base border-b">
+            <div className="flex items-center justify-between gap-base">
+              <span className="text-sm text-low">OpenCode active time</span>
+              <IssueTimeBadge label={issueTimeLabel} />
+            </div>
+            <p className="mt-half text-xs text-low">
+              {issueTimeExplanation ??
+                'Time when OpenCode was actively working while this session was bound to the ticket. Idle and approval-wait time are excluded.'}
+            </p>
+          </div>
+        )}
 
         {/* Tags Row */}
         <div className="px-base py-base border-b">

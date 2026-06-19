@@ -30,6 +30,7 @@ pub mod sessions;
 pub mod ssh_session;
 pub mod tags;
 pub mod terminal;
+pub mod time_tracking;
 pub mod webrtc;
 pub mod workspaces;
 
@@ -49,6 +50,7 @@ pub fn router(deployment: DeploymentImpl) -> IntoMakeService<Router> {
         .merge(approvals::router())
         .merge(scratch::router(&deployment))
         .merge(search::router(&deployment))
+        .merge(time_tracking::router(&deployment))
         .merge(preview::api_router())
         .merge(releases::router())
         .merge(sessions::router(&deployment))

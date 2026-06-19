@@ -22,6 +22,7 @@ export interface IssueListViewProps {
   getResolvedRelationshipsForIssue?: (
     issueId: string
   ) => IssueListRowRelationship[];
+  getIssueTimeLabel?: (issueId: string) => string | null;
   onIssueClick: (issueId: string, e: MouseEvent) => void;
   selectedIssueId: string | null;
   selectedIssueIds?: Set<string>;
@@ -37,6 +38,7 @@ export function IssueListView({
   issueAssigneesMap,
   getTagObjectsForIssue,
   getResolvedRelationshipsForIssue,
+  getIssueTimeLabel,
   onIssueClick,
   selectedIssueId,
   selectedIssueIds,
@@ -55,6 +57,7 @@ export function IssueListView({
           issueAssigneesMap={issueAssigneesMap}
           getTagObjectsForIssue={getTagObjectsForIssue}
           getResolvedRelationshipsForIssue={getResolvedRelationshipsForIssue}
+          getIssueTimeLabel={getIssueTimeLabel}
           onIssueClick={onIssueClick}
           selectedIssueId={selectedIssueId}
           selectedIssueIds={selectedIssueIds}

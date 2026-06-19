@@ -1,0 +1,25 @@
+{
+  "name": "@vibe/opencode-time-tracker",
+  "version": "0.1.0",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "node -e \"require('node:fs').rmSync('dist', { recursive: true, force: true })\" && tsc -p tsconfig.json",
+    "check": "tsc --noEmit -p tsconfig.json",
+    "test": "vitest run",
+    "format": "prettier --write \"src/**/*.{ts,json}\""
+  },
+  "dependencies": {
+    "@opencode-ai/plugin": "1.0.224"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "prettier": "^3.6.1",
+    "typescript": "^5.7.0",
+    "vitest": "^3.0.0"
+  }
+}

@@ -101,6 +101,9 @@ import {
   OpenRemoteWorkspaceInEditorRequest,
   OpenRemoteEditorResponse,
   ProfileResponse,
+  CreateOpenCodeTimeTrackingTokenRequest,
+  CreateOpenCodeTimeTrackingTokenResponse,
+  OpenCodeTimeTrackingTokenSummary,
 } from 'shared/types';
 import type { Project as RemoteProject } from 'shared/remote-types';
 import type { WorkspaceWithSession } from '@/shared/types/attempt';
@@ -1108,6 +1111,46 @@ export const mcpServersApi = {
         response
       );
     }
+  },
+};
+
+// OpenCode time-tracking plugin token APIs
+export const opencodeTimeTrackingApi = {
+  listTokens: async (
+    hostId?: string | null
+  ): Promise<OpenCodeTimeTrackingTokenSummary[]> => {
+    const response = await makeHostAwareRequest(
+      '/api/time-tracking/opencode/tokens',
+      hostId
+    );
+    return handleApiResponse<OpenCodeTimeTrackingTokenSummary[]>(response);
+  },
+
+  createToken: async (
+    data: CreateOpenCodeTimeTrackingTokenRequest,
+    hostId?: string | null
+  ): Promise<CreateOpenCodeTimeTrackingTokenResponse> => {
+    const response = await makeHostAwareRequest(
+      '/api/time-tracking/opencode/tokens',
+      hostId,
+      {
+        method: 'POST',
+        body: JSON.stringify(data),
+      }
+    );
+    return handleApiResponse<CreateOpenCodeTimeTrackingTokenResponse>(response);
+  },
+
+  revokeToken: async (
+    tokenId: string,
+    hostId?: string | null
+  ): Promise<void> => {
+    const response = await makeHostAwareRequest(
+      `/api/time-tracking/opencode/tokens/${encodeURIComponent(tokenId)}`,
+      hostId,
+      { method: 'DELETE' }
+    );
+    return handleApiResponse<void>(response);
   },
 };
 

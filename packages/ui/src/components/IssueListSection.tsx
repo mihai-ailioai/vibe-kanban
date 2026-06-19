@@ -29,6 +29,7 @@ export interface IssueListSectionProps {
   getResolvedRelationshipsForIssue?: (
     issueId: string
   ) => IssueListRowRelationship[];
+  getIssueTimeLabel?: (issueId: string) => string | null;
   onIssueClick: (issueId: string, e: MouseEvent) => void;
   selectedIssueId: string | null;
   selectedIssueIds?: Set<string>;
@@ -44,6 +45,7 @@ export function IssueListSection({
   issueAssigneesMap,
   getTagObjectsForIssue,
   getResolvedRelationshipsForIssue,
+  getIssueTimeLabel,
   onIssueClick,
   selectedIssueId,
   selectedIssueIds,
@@ -116,6 +118,7 @@ export function IssueListSection({
                     statusColor={status.color}
                     tags={getTagObjectsForIssue(issue.id)}
                     relationships={getResolvedRelationshipsForIssue?.(issue.id)}
+                    issueTimeLabel={getIssueTimeLabel?.(issue.id)}
                     assignees={issueAssigneesMap[issue.id] ?? []}
                     onClick={(e) => onIssueClick(issue.id, e)}
                     isSelected={selectedIssueId === issue.id}

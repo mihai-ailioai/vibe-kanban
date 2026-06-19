@@ -18,6 +18,7 @@ import {
   RelationshipBadge,
   type RelationshipDisplayType,
 } from './RelationshipBadge';
+import { IssueTimeBadge } from './IssueTimeBadge';
 
 export interface KanbanTag {
   id: string;
@@ -131,6 +132,7 @@ export type KanbanCardContentProps<TTag extends KanbanTag = KanbanTag> = {
   assignees: KanbanAssigneeUser[];
   pullRequests?: KanbanPullRequest[];
   relationships?: KanbanRelationship[];
+  issueTimeLabel?: string | null;
   isSubIssue?: boolean;
   isLoading?: boolean;
   className?: string;
@@ -150,6 +152,7 @@ export function KanbanCardContent<TTag extends KanbanTag = KanbanTag>({
   assignees,
   pullRequests = [],
   relationships = [],
+  issueTimeLabel,
   isSubIssue,
   isLoading = false,
   className,
@@ -295,7 +298,8 @@ export function KanbanCardContent<TTag extends KanbanTag = KanbanTag>({
       {(tags.length > 0 ||
         tagEditProps ||
         pullRequests.length > 0 ||
-        relationships.length > 0) && (
+        relationships.length > 0 ||
+        issueTimeLabel) && (
         <div className="flex items-center gap-half flex-wrap min-w-0">
           {tagEditProps ? (
             (tagEditProps.renderTagEditor?.({
@@ -340,6 +344,7 @@ export function KanbanCardContent<TTag extends KanbanTag = KanbanTag>({
               +{relationships.length - 2}
             </span>
           )}
+          {issueTimeLabel && <IssueTimeBadge label={issueTimeLabel} />}
         </div>
       )}
     </div>

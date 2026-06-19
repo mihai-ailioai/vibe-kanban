@@ -1,9 +1,9 @@
 //! All shape route declarations with authorization scope and REST fallback.
 
 use api_types::{
-    ListIssueAssigneesResponse, ListIssueCommentReactionsResponse, ListIssueCommentsResponse,
-    ListIssueFollowersResponse, ListIssueRelationshipsResponse, ListIssueTagsResponse,
-    ListIssuesResponse, ListProjectStatusesResponse, ListProjectsResponse,
+    IssueTimeTotal, ListIssueAssigneesResponse, ListIssueCommentReactionsResponse,
+    ListIssueCommentsResponse, ListIssueFollowersResponse, ListIssueRelationshipsResponse,
+    ListIssueTagsResponse, ListIssuesResponse, ListProjectStatusesResponse, ListProjectsResponse,
     ListPullRequestIssuesResponse, ListPullRequestsResponse, ListTagsResponse, Notification,
     OrganizationMember, SearchIssuesRequest, User, Workspace,
 };
@@ -22,7 +22,8 @@ use crate::{
         issue_comment_reactions::IssueCommentReactionRepository,
         issue_comments::IssueCommentRepository, issue_followers::IssueFollowerRepository,
         issue_relationships::IssueRelationshipRepository, issue_tags::IssueTagRepository,
-        issues::IssueRepository, notifications::NotificationRepository, organization_members,
+        issue_time_tracking::IssueTimeTrackingRepository, issues::IssueRepository,
+        notifications::NotificationRepository, organization_members,
         project_statuses::ProjectStatusRepository, projects::ProjectRepository,
         pull_request_issues::PullRequestIssueRepository, pull_requests::PullRequestRepository,
         tags::TagRepository, workspaces::WorkspaceRepository,
@@ -60,6 +61,11 @@ struct ListUsersResponse {
 #[derive(Debug, Serialize)]
 struct ListWorkspacesResponse {
     workspaces: Vec<Workspace>,
+}
+
+#[derive(Debug, Serialize)]
+struct ListIssueTimeTotalsResponse {
+    issue_time_totals: Vec<IssueTimeTotal>,
 }
 
 // =============================================================================
@@ -114,6 +120,12 @@ pub fn all_shape_routes() -> Vec<ShapeRoute> {
             ShapeScope::Project,
             "/fallback/issues",
             fallback_list_issues,
+        ),
+        ShapeRoute::new(
+            &shapes::PROJECT_ISSUE_TIME_TOTALS_SHAPE,
+            ShapeScope::Project,
+            "/fallback/issue_time_totals",
+            fallback_list_issue_time_totals,
         ),
         ShapeRoute::new(
             &shapes::USER_WORKSPACES_SHAPE,
@@ -339,6 +351,29 @@ async fn fallback_list_issues(
     })?;
 
     Ok(Json(response))
+}
+
+async fn fallback_list_issue_time_totals(
+    State(state): State<AppState>,
+    Extension(ctx): Extension<RequestContext>,
+    Query(query): Query<ProjectFallbackQuery>,
+) -> Result<Json<ListIssueTimeTotalsResponse>, ErrorResponse> {
+    ensure_project_access(state.pool(), ctx.user.id, query.project_id).await?;
+
+    let issue_time_totals = IssueTimeTrackingRepository::list_totals_by_project(
+        state.pool(),
+        query.project_id,
+    )
+    .await
+    .map_err(|error| {
+        tracing::error!(?error, project_id = %query.project_id, "failed to list issue time totals (fallback)");
+        ErrorResponse::new(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "failed to list issue time totals",
+        )
+    })?;
+
+    Ok(Json(ListIssueTimeTotalsResponse { issue_time_totals }))
 }
 
 async fn fallback_list_project_workspaces(

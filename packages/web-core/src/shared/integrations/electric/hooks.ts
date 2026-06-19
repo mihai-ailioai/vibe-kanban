@@ -62,6 +62,12 @@ export interface UseShapeOptions<
    * insert/update/remove functions for optimistic mutations.
    */
   mutation?: M;
+  /**
+   * When true, keep hook-local errors but do not register them with the
+   * global sync error UI.
+   * @default false
+   */
+  suppressErrorRegistration?: boolean;
 }
 
 /**
@@ -95,7 +101,11 @@ export function useShape<
 ): M extends MutationDefinition<unknown, unknown, unknown>
   ? UseShapeMutationResult<T, MutationCreateType<M>, MutationUpdateType<M>>
   : UseShapeResult<T> {
-  const { enabled = true, mutation } = options;
+  const {
+    enabled = true,
+    mutation,
+    suppressErrorRegistration = false,
+  } = options;
 
   const [error, setError] = useState<SyncError | null>(null);
   const [retryKey, setRetryKey] = useState(0);
@@ -123,6 +133,13 @@ export function useShape<
   );
 
   useEffect(() => {
+    if (suppressErrorRegistration) {
+      clearErrorFn?.(streamId);
+      return () => {
+        clearErrorFn?.(streamId);
+      };
+    }
+
     if (error && registerErrorFn) {
       registerErrorFn(streamId, shape.table, error, retry);
     } else if (!error && clearErrorFn) {
@@ -132,7 +149,15 @@ export function useShape<
     return () => {
       clearErrorFn?.(streamId);
     };
-  }, [error, streamId, shape.table, retry, registerErrorFn, clearErrorFn]);
+  }, [
+    error,
+    streamId,
+    shape.table,
+    retry,
+    registerErrorFn,
+    clearErrorFn,
+    suppressErrorRegistration,
+  ]);
 
   const collection = useMemo(() => {
     if (!enabled) return null;

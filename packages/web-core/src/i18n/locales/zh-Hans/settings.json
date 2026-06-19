@@ -23,6 +23,8 @@
         "agentsDesc": "编码代理配置",
         "mcp": "MCP 服务器",
         "mcpDesc": "模型上下文协议服务器",
+        "opencode-time-tracking": "OpenCode Time Tracking",
+        "opencode-time-trackingDesc": "Plugin tokens for active-time tracking",
         "organizations": "组织设置",
         "organizationsDesc": "管理组织成员和权限",
         "remote-projects": "项目",

@@ -13,6 +13,7 @@ import {
   type RelationshipDisplayType,
 } from './RelationshipBadge';
 import { Checkbox } from './Checkbox';
+import { IssueTimeBadge } from './IssueTimeBadge';
 
 /**
  * Formats a date as a relative time string (e.g., "1d", "2h", "3m")
@@ -66,6 +67,7 @@ export interface IssueListRowProps {
   statusColor: string;
   tags: IssueListRowTag[];
   relationships?: IssueListRowRelationship[];
+  issueTimeLabel?: string | null;
   assignees: KanbanAssigneeUser[];
   onClick: (e: MouseEvent) => void;
   isSelected: boolean;
@@ -81,6 +83,7 @@ export function IssueListRow({
   statusColor,
   tags,
   relationships = [],
+  issueTimeLabel,
   assignees,
   onClick,
   isSelected,
@@ -157,7 +160,7 @@ export function IssueListRow({
             <span className="text-base text-high truncate">{issue.title}</span>
           </div>
 
-          {/* Right side: Tags, Assignee, Age */}
+          {/* Right side: Tags, Time, Assignee, Age */}
           <div className="flex items-center gap-base shrink-0">
             {visibleTags.length > 0 && (
               <div className="flex items-center gap-half">
@@ -184,6 +187,7 @@ export function IssueListRow({
                 )}
               </div>
             )}
+            {issueTimeLabel && <IssueTimeBadge label={issueTimeLabel} />}
             <KanbanAssignee assignees={assignees} />
             <span className="text-sm text-low w-5 text-right">
               {formatRelativeTime(issue.created_at)}

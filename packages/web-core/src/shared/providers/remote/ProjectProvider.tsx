@@ -11,6 +11,7 @@ import {
   PROJECT_PULL_REQUESTS_SHAPE,
   PROJECT_PULL_REQUEST_ISSUES_SHAPE,
   PROJECT_WORKSPACES_SHAPE,
+  PROJECT_ISSUE_TIME_TOTALS_SHAPE,
   ISSUE_MUTATION,
   PROJECT_STATUS_MUTATION,
   TAG_MUTATION,
@@ -22,6 +23,7 @@ import {
   type Issue,
   type ProjectStatus,
   type Tag,
+  type IssueTimeTotal,
 } from 'shared/remote-types';
 import {
   ProjectContext,
@@ -78,6 +80,11 @@ export function ProjectProvider({ projectId, children }: ProjectProviderProps) {
   const workspacesResult = useShape(PROJECT_WORKSPACES_SHAPE, params, {
     enabled,
   });
+  const issueTimeTotalsResult = useShape(
+    PROJECT_ISSUE_TIME_TOTALS_SHAPE,
+    params,
+    { enabled, suppressErrorRegistration: true }
+  );
 
   // Board readiness depends on core kanban data only.
   // Other project-scoped shapes hydrate opportunistically after render.
@@ -109,6 +116,7 @@ export function ProjectProvider({ projectId, children }: ProjectProviderProps) {
     pullRequestsResult.retry();
     pullRequestIssuesResult.retry();
     workspacesResult.retry();
+    issueTimeTotalsResult.retry();
   }, [
     issuesResult,
     statusesResult,
@@ -120,6 +128,7 @@ export function ProjectProvider({ projectId, children }: ProjectProviderProps) {
     pullRequestsResult,
     pullRequestIssuesResult,
     workspacesResult,
+    issueTimeTotalsResult,
   ]);
 
   // Computed Maps for O(1) lookup
@@ -146,6 +155,14 @@ export function ProjectProvider({ projectId, children }: ProjectProviderProps) {
     }
     return map;
   }, [tagsResult.data]);
+
+  const issueTimeTotalsByIssueId = useMemo(() => {
+    const map = new Map<string, IssueTimeTotal>();
+    for (const total of issueTimeTotalsResult.data) {
+      map.set(total.issue_id, total);
+    }
+    return map;
+  }, [issueTimeTotalsResult.data]);
 
   // Lookup helpers
   const getIssue = useCallback(
@@ -224,6 +241,11 @@ export function ProjectProvider({ projectId, children }: ProjectProviderProps) {
     [workspacesResult.data]
   );
 
+  const getIssueTimeTotal = useCallback(
+    (issueId: string) => issueTimeTotalsByIssueId.get(issueId),
+    [issueTimeTotalsByIssueId]
+  );
+
   const value = useMemo<ProjectContextValue>(
     () => ({
       projectId,
@@ -239,6 +261,7 @@ export function ProjectProvider({ projectId, children }: ProjectProviderProps) {
       pullRequests: pullRequestsResult.data,
       pullRequestIssues: pullRequestIssuesResult.data,
       workspaces: workspacesResult.data,
+      issueTimeTotals: issueTimeTotalsResult.data,
 
       // Loading/error
       isLoading,
@@ -292,11 +315,13 @@ export function ProjectProvider({ projectId, children }: ProjectProviderProps) {
       getTag,
       getPullRequestsForIssue,
       getWorkspacesForIssue,
+      getIssueTimeTotal,
 
       // Computed aggregations
       issuesById,
       statusesById,
       tagsById,
+      issueTimeTotalsByIssueId,
     }),
     [
       projectId,
@@ -310,6 +335,7 @@ export function ProjectProvider({ projectId, children }: ProjectProviderProps) {
       pullRequestsResult,
       pullRequestIssuesResult,
       workspacesResult,
+      issueTimeTotalsResult,
       isLoading,
       error,
       retry,
@@ -324,9 +350,11 @@ export function ProjectProvider({ projectId, children }: ProjectProviderProps) {
       getTag,
       getPullRequestsForIssue,
       getWorkspacesForIssue,
+      getIssueTimeTotal,
       issuesById,
       statusesById,
       tagsById,
+      issueTimeTotalsByIssueId,
     ]
   );
 

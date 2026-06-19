@@ -226,6 +226,24 @@ export type ProfileResponse = { user_id: string, username: string | null, email:
 
 export type ProviderProfile = { provider: string, username: string | null, display_name: string | null, email: string | null, avatar_url: string | null, };
 
+export type IssueTimeTotal = { project_id: string, issue_id: string, opencode_active_ms: number, manual_adjustment_ms: number, total_ms: number, entry_count: number, last_entry_at: string | null, updated_at: string, };
+
+export type CreateOpenCodeTimeEntriesRequest = { schema_version: number, entries: Array<OpenCodeTimeEntryInput>, };
+
+export type OpenCodeTimeEntryInput = { entry_id: string, project_id: string, issue_id: string, source_session_id: string | null, started_at: string, ended_at: string, duration_ms: number, metadata: JsonValue, };
+
+export type TimeEntryStatus = "created" | "duplicate";
+
+export type OpenCodeTimeEntryResult = { entry_id: string, status: TimeEntryStatus, project_id: string, issue_id: string, duration_ms: number, };
+
+export type CreateOpenCodeTimeEntriesResponse = { txid: number, results: Array<OpenCodeTimeEntryResult>, updated_totals: Array<IssueTimeTotal>, };
+
+export type CreateOpenCodeTimeTrackingTokenRequest = { label?: string, };
+
+export type CreateOpenCodeTimeTrackingTokenResponse = { id: string, token: string, created_at: string, };
+
+export type OpenCodeTimeTrackingTokenSummary = { id: string, label: string | null, created_at: string, last_used_at: string | null, revoked_at: string | null, };
+
 export type StatusResponse = { logged_in: boolean, profile: ProfileResponse | null, degraded: boolean | null, };
 
 export enum MemberRole { ADMIN = "ADMIN", MEMBER = "MEMBER" }

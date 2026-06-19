@@ -13,6 +13,7 @@ import type {
   PullRequest,
   PullRequestIssue,
   Workspace,
+  IssueTimeTotal,
   CreateIssueRequest,
   UpdateIssueRequest,
   CreateProjectStatusRequest,
@@ -40,6 +41,7 @@ import type {
  * - PullRequests (data only)
  * - PullRequestIssues (data + mutations)
  * - Workspaces (data only)
+ * - IssueTimeTotals (data only)
  */
 export interface ProjectContextValue {
   projectId: string;
@@ -55,6 +57,7 @@ export interface ProjectContextValue {
   pullRequests: PullRequest[];
   pullRequestIssues: PullRequestIssue[];
   workspaces: Workspace[];
+  issueTimeTotals: IssueTimeTotal[];
 
   // Loading/error state
   isLoading: boolean;
@@ -124,11 +127,13 @@ export interface ProjectContextValue {
   getTag: (tagId: string) => Tag | undefined;
   getPullRequestsForIssue: (issueId: string) => PullRequest[];
   getWorkspacesForIssue: (issueId: string) => Workspace[];
+  getIssueTimeTotal: (issueId: string) => IssueTimeTotal | undefined;
 
   // Computed aggregations (Maps for O(1) lookup)
   issuesById: Map<string, Issue>;
   statusesById: Map<string, ProjectStatus>;
   tagsById: Map<string, Tag>;
+  issueTimeTotalsByIssueId: Map<string, IssueTimeTotal>;
 }
 
 export const ProjectContext = createHmrContext<ProjectContextValue | null>(

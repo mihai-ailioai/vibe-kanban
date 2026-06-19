@@ -12,6 +12,7 @@ pub mod scratch;
 pub mod session;
 pub mod tag;
 pub mod task;
+pub mod time_tracking_token;
 pub mod workspace;
 pub mod workspace_repo;
 pub mod workspace_repo_claim;

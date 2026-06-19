@@ -2,8 +2,8 @@
 
 use api_types::{
     Issue, IssueAssignee, IssueComment, IssueCommentReaction, IssueFollower, IssueRelationship,
-    IssueTag, Notification, OrganizationMember, Project, ProjectStatus, PullRequest,
-    PullRequestIssue, Tag, User, Workspace,
+    IssueTag, IssueTimeTotal, Notification, OrganizationMember, Project, ProjectStatus,
+    PullRequest, PullRequestIssue, Tag, User, Workspace,
 };
 
 use crate::shape_definition::ShapeDefinition;
@@ -71,6 +71,18 @@ pub const PROJECT_ISSUES_SHAPE: ShapeDefinition<Issue> = crate::define_shape!(
     url: "/shape/project/{project_id}/issues",
     params: ["project_id"],
 );
+
+// Intentionally constructed directly instead of through `define_shape!`: the
+// new `issue_time_totals` table does not have local SQLx metadata yet because
+// remote DB preparation is blocked without `initdb` in this environment.
+pub const PROJECT_ISSUE_TIME_TOTALS_SHAPE: ShapeDefinition<IssueTimeTotal> = ShapeDefinition {
+    name: "PROJECT_ISSUE_TIME_TOTALS_SHAPE",
+    table: "issue_time_totals",
+    where_clause: r#""project_id" = $1"#,
+    params: &["project_id"],
+    url: "/shape/project/{project_id}/issue_time_totals",
+    _phantom: std::marker::PhantomData,
+};
 
 pub const USER_WORKSPACES_SHAPE: ShapeDefinition<Workspace> = crate::define_shape!(
     name: "USER_WORKSPACES_SHAPE",
